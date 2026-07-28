@@ -1,0 +1,69 @@
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Casts\Attribute;
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Model;
+
+class Site extends Model
+{
+    use HasFactory;
+
+    protected $fillable = [
+        'name',
+        'region_id',
+        'url',
+        'ad_url',
+        'address',
+        'phone',
+        'business_status',
+        'rating_count',
+        'rating_value',
+        'status',
+        'source',
+        'notes',
+        'last_scan_at',
+        'discovered_at',
+        'discovery_run_id',
+    ];
+
+    protected function casts(): array
+    {
+        return [
+            'last_scan_at' => 'datetime',
+            'discovered_at' => 'datetime',
+            'rating_count' => 'integer',
+            'rating_value' => 'float',
+        ];
+    }
+
+    public function formMappings(): HasMany
+    {
+        return $this->hasMany(FormMapping::class);
+    }
+
+    public function campaignSiteRuns(): HasMany
+    {
+        return $this->hasMany(CampaignSiteRun::class);
+    }
+
+    public function region(): BelongsTo
+    {
+        return $this->belongsTo(Region::class);
+    }
+
+    public function discoveryRun(): BelongsTo
+    {
+        return $this->belongsTo(DiscoveryRun::class);
+    }
+
+    protected function url(): Attribute
+    {
+        return Attribute::make(
+            set: static fn (string $value): string => trim($value),
+        );
+    }
+}

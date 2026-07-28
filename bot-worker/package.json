@@ -1,0 +1,30 @@
+{
+  "name": "bot-worker",
+  "version": "1.0.0",
+  "description": "Playwright bot worker for legal lead submission flows",
+  "main": "dist/index.js",
+  "scripts": {
+    "dev": "npm run build && node dist/index.js",
+    "worker": "npm run build && node dist/index.js",
+    "build": "tsc -p tsconfig.json",
+    "probe": "npm run build && node scripts/probe-site.cjs",
+    "test:rucaptcha": "npm run build && node dist/scripts/test-rucaptcha.js",
+    "scan:pages": "npm run build && node dist/scripts/agentMultiPageScan.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "axios": "^1.16.1",
+    "camoufox-js": "^0.10.2",
+    "dotenv": "^17.4.2",
+    "pino": "^10.3.1",
+    "playwright": "^1.60.0",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "^25.9.1",
+    "tsx": "^4.22.4",
+    "typescript": "^6.0.3"
+  }
+}

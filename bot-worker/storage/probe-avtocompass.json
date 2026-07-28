@@ -1,0 +1,290 @@
+{
+  "url": "https://avtocompass.ru/",
+  "dump": {
+    "title": "АвтоКомпас — автомобили в Краснодаре: новые и с пробегом",
+    "formCount": 4,
+    "forms": [
+      {
+        "i": 0,
+        "action": null,
+        "className": "grid grid-flow-row auto-rows-min gap-3 flex w-full md:max-w-md flex-col gap-5 text-neutral-content l",
+        "id": null,
+        "formDisplay": "grid",
+        "formVisibility": "visible",
+        "formOpacity": "1",
+        "formW": 448,
+        "formH": 329,
+        "inputs": [
+          {
+            "tag": "input",
+            "type": "text",
+            "name": null,
+            "id": "maryccb84cef47f3aba1ceaa8f68dd976331name",
+            "placeholder": " ",
+            "className": "",
+            "text": "",
+            "visible": true,
+            "opacity": "1",
+            "display": "flex",
+            "w": 422,
+            "h": 48
+          },
+          {
+            "tag": "input",
+            "type": "text",
+            "name": null,
+            "id": "maryde52271c6f60bdbc7339c5f26130d35ephone",
+            "placeholder": "+7(900)123-45-67 ",
+            "className": "",
+            "text": "",
+            "visible": true,
+            "opacity": "1",
+            "display": "flex",
+            "w": 422,
+            "h": 48
+          },
+          {
+            "tag": "input",
+            "type": "checkbox",
+            "name": "consent",
+            "id": null,
+            "placeholder": null,
+            "className": "toggle mt-0.5 shrink-0",
+            "text": "",
+            "visible": true,
+            "opacity": "1",
+            "display": "grid",
+            "w": 52,
+            "h": 30
+          },
+          {
+            "tag": "button",
+            "type": "submit",
+            "name": null,
+            "id": null,
+            "placeholder": null,
+            "className": "btn btn-primary grow md:max-w-xs",
+            "text": "Оставить заявку онлайн",
+            "visible": true,
+            "opacity": "1",
+            "display": "flex",
+            "w": 320,
+            "h": 50
+          }
+        ]
+      },
+      {
+        "i": 1,
+        "action": null,
+        "className": "",
+        "id": null,
+        "formDisplay": "block",
+        "formVisibility": "hidden",
+        "formOpacity": "1",
+        "formW": 578,
+        "formH": 0,
+        "inputs": [
+          {
+            "tag": "button",
+            "type": "button",
+            "name": null,
+            "id": null,
+            "placeholder": null,
+            "className": "btn btn-circle btn-sm btn-ghost absolute end-2 top-2 z-[999]",
+            "text": "",
+            "visible": true,
+            "opacity": "1",
+            "display": "flex",
+            "w": 38,
+            "h": 38
+          }
+        ]
+      },
+      {
+        "i": 2,
+        "action": null,
+        "className": "grid grid-flow-row auto-rows-min gap-3 space-y-2",
+        "id": null,
+        "formDisplay": "grid",
+        "formVisibility": "hidden",
+        "formOpacity": "1",
+        "formW": 578,
+        "formH": 278,
+        "inputs": [
+          {
+            "tag": "input",
+            "type": "text",
+            "name": "name",
+            "id": "mary6ca689a295274153a62a6e00cea73ddename",
+            "placeholder": "Имя ",
+            "className": "rounded-lg",
+            "text": "",
+            "visible": true,
+            "opacity": "1",
+            "display": "block",
+            "w": 553,
+            "h": 46
+          },
+          {
+            "tag": "input",
+            "type": "text",
+            "name": "phone",
+            "id": "maryde52271c6f60bdbc7339c5f26130d35ephone",
+            "placeholder": "+7(900)123-45-67 ",
+            "className": "rounded-lg",
+            "text": "",
+            "visible": true,
+            "opacity": "1",
+            "display": "flex",
+            "w": 553,
+            "h": 46
+          },
+          {
+            "tag": "input",
+            "type": "checkbox",
+            "name": "consent",
+            "id": null,
+            "placeholder": null,
+            "className": "toggle mt-0.5 shrink-0",
+            "text": "",
+            "visible": true,
+            "opacity": "1",
+            "display": "grid",
+            "w": 49,
+            "h": 29
+          },
+          {
+            "tag": "button",
+            "type": "button",
+            "name": null,
+            "id": null,
+            "placeholder": null,
+            "className": "btn btn-primary rounded-lg w-full  lg:w-1/2",
+            "text": "Перезвоните мне",
+            "visible": true,
+            "opacity": "1",
+            "display": "inline-flex",
+            "w": 289,
+            "h": 48
+          }
+        ]
+      },
+      {
+        "i": 3,
+        "action": null,
+        "className": "modal-backdrop",
+        "id": null,
+        "formDisplay": "grid",
+        "formVisibility": "hidden",
+        "formOpacity": "1",
+        "formW": 1890,
+        "formH": 1080,
+        "inputs": [
+          {
+            "tag": "button",
+            "type": "button",
+            "name": null,
+            "id": null,
+            "placeholder": null,
+            "className": "",
+            "text": "close",
+            "visible": true,
+            "opacity": "1",
+            "display": "block",
+            "w": 1890,
+            "h": 1080
+          }
+        ]
+      }
+    ],
+    "phones": [
+      {
+        "type": "text",
+        "name": "",
+        "id": "maryde52271c6f60bdbc7339c5f26130d35ephone",
+        "placeholder": "+7(900)123-45-67 ",
+        "className": "",
+        "visible": true,
+        "opacity": "1"
+      },
+      {
+        "type": "text",
+        "name": "phone",
+        "id": "maryde52271c6f60bdbc7339c5f26130d35ephone",
+        "placeholder": "+7(900)123-45-67 ",
+        "className": "rounded-lg",
+        "visible": true,
+        "opacity": "1"
+      }
+    ],
+    "callbackButtons": [
+      {
+        "tag": "A",
+        "text": "Заявка на кредит",
+        "href": "https://avtocompass.ru/autocredit/2130"
+      },
+      {
+        "tag": "A",
+        "text": "Заявка на кредит",
+        "href": "https://avtocompass.ru/autocredit/276"
+      },
+      {
+        "tag": "A",
+        "text": "Заявка на кредит",
+        "href": "https://avtocompass.ru/autocredit/279"
+      },
+      {
+        "tag": "A",
+        "text": "Заявка на кредит",
+        "href": "https://avtocompass.ru/autocredit/792"
+      },
+      {
+        "tag": "A",
+        "text": "Заявка на кредит",
+        "href": "https://avtocompass.ru/autocredit/281"
+      },
+      {
+        "tag": "A",
+        "text": "Заявка на кредит",
+        "href": "https://avtocompass.ru/autocredit/2080"
+      },
+      {
+        "tag": "A",
+        "text": "Заявка на кредит",
+        "href": "https://avtocompass.ru/autocredit/1331"
+      },
+      {
+        "tag": "A",
+        "text": "Заявка на кредит",
+        "href": "https://avtocompass.ru/autocredit/308"
+      },
+      {
+        "tag": "A",
+        "text": "Заявка на кредит",
+        "href": "https://avtocompass.ru/autocredit/567"
+      },
+      {
+        "tag": "A",
+        "text": "Заявка на кредит",
+        "href": "https://avtocompass.ru/autocredit/2108"
+      }
+    ]
+  },
+  "raw": {
+    "phonesSeen": 1,
+    "formsScanned": 7,
+    "forms": [
+      {
+        "formScopeSelector": "form:has(#maryccb84cef47f3aba1ceaa8f68dd976331name)",
+        "nameSelector": "#maryccb84cef47f3aba1ceaa8f68dd976331name",
+        "phoneSelector": "#maryde52271c6f60bdbc7339c5f26130d35ephone",
+        "submitSelector": "button:has-text(\"Оставить заявку онлайн\")",
+        "consentCheckboxSelectors": [
+          "input[name=\"consent\"][type=\"checkbox\"]"
+        ],
+        "fingerprint": "form:has(#maryccb84cef47f3aba1ceaa8f68dd976331name)|#maryde52271c6f60bdbc7339c5f26130d35ephone|button:has-text(\"Оставить заявку онлайн\")",
+        "score": 110
+      }
+    ]
+  }
+}

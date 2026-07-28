@@ -1,0 +1,34 @@
+<?php
+
+namespace App\Services;
+
+use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
+
+class TelegramNotifier
+{
+    public function sendMessage(string $chatId, string $text): bool
+    {
+        $token = (string) config('services.telegram.bot_token');
+
+        if ($token === '') {
+            return false;
+        }
+
+        try {
+            $response = Http::timeout(10)->post("https://api.telegram.org/bot{$token}/sendMessage", [
+                'chat_id' => $chatId,
+                'text' => $text,
+            ]);
+
+            return $response->successful();
+        } catch (\Throwable $e) {
+            Log::warning('telegram.send_failed', [
+                'chat_id' => $chatId,
+                'error' => $e->getMessage(),
+            ]);
+
+            return false;
+        }
+    }
+}

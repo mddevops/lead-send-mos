@@ -1,0 +1,13 @@
+{
+  "initial": {
+    "forms": [],
+    "fixedCtas": []
+  },
+  "detected": {
+    "phonesSeen": 0,
+    "formsScanned": 9,
+    "forms": []
+  },
+  "entryPoints": [],
+  "actions": []
+}

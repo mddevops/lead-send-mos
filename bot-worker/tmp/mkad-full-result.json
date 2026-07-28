@@ -1,0 +1,15 @@
+{
+  "engine": "chromium",
+  "title": "МКАД 78 Авто — премиум авто из Китая в Москве, 150+ моделей",
+  "iframes": [
+    "https://smartcaptcha.yandexcloud.net/backend.d9627726d03678c949b5.html?sitekey=ysc1_KFSAlFEytk4wMsc5iKFMc8qYxqlHEdpcggWHSyRd217e1fe9&theme=light&hl=ru&host=mkad78km.ru&href=https%3A%2F%2Fmkad78km.ru%2F&test=false&webview=false&hideChallengeContainer=false",
+    "https://smartcaptcha.yandexcloud.net/checkbox.ru.bb01fbaa69273bb18ded.html?sitekey=ysc1_KFSAlFEytk4wMsc5iKFMc8qYxqlHEdpcggWHSyRd217e1fe9&theme=light&hl=ru&host=mkad78km.ru&href=https%3A%2F%2Fmkad78km.ru%2F&test=false&webview=false&hideChallengeContainer=false"
+  ],
+  "tokenBefore": "",
+  "checkboxVisible": false,
+  "imageCaptcha": false,
+  "sliderVisible": false,
+  "tokenLength": 0,
+  "submitted": false,
+  "reason": "Токен smart-token пустой"
+}
