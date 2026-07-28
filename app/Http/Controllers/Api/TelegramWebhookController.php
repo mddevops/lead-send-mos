@@ -10,6 +10,7 @@ use App\Models\ProjectSetting;
 use App\Models\Proxy;
 use App\Models\Site;
 use App\Support\ProxyPicker;
+use App\Support\RuntimeSettings;
 use App\Support\SubmitLeadPayloadBuilder;
 use App\Services\TelegramBotConversation;
 use App\Services\TelegramCampaignService;
@@ -27,7 +28,7 @@ class TelegramWebhookController extends Controller
         TelegramBotConversation $conversation,
         TelegramCampaignService $campaigns,
     ): JsonResponse {
-        $expectedSecret = (string) config('services.telegram.webhook_secret');
+        $expectedSecret = RuntimeSettings::telegramWebhookSecret();
 
         abort_if($expectedSecret === '' || ! hash_equals($expectedSecret, $secret), 403);
 

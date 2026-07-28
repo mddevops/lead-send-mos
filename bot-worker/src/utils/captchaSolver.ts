@@ -1,6 +1,6 @@
 import axios from 'axios';
 import pino from 'pino';
-import { config } from '../config';
+import { runtimeConfig as config } from '../runtimeConfig';
 
 const logger = pino({ name: 'captcha-solver' });
 

@@ -1,6 +1,7 @@
 import pino from 'pino';
-import { claimNextTask, notifyTaskCompleted, notifyTaskFailed, notifyTaskStarted } from './services/laravelApi';
+import { claimNextTask, fetchRuntimeConfig, notifyTaskCompleted, notifyTaskFailed, notifyTaskStarted } from './services/laravelApi';
 import { config } from './config';
+import { applyRuntimeOverlay, runtimeConfig } from './runtimeConfig';
 import { verifyCaptchaSolverConnection } from './utils/captchaSolver';
 import { discoverYandexAds } from './tasks/discoverYandexAds';
 import { manualMappingSession } from './tasks/manualMapping';
@@ -16,6 +17,30 @@ type WorkerPayload = {
   type: WorkerTaskType;
   payload: Record<string, unknown>;
 };
+
+async function syncRuntimeConfigFromLaravel(): Promise<void> {
+  const remote = await fetchRuntimeConfig();
+  if (!remote) {
+    return;
+  }
+
+  applyRuntimeOverlay({
+    BOT_CONCURRENCY: remote.bot_concurrency,
+    CAPTCHA_SOLVER_ENABLED: remote.captcha_solver_enabled,
+    CAPTCHA_SOLVER_API_KEY: remote.captcha_solver_api_key,
+    CAPTCHA_SOLVER_PROVIDER: remote.captcha_solver_provider,
+  });
+
+  logger.info(
+    {
+      concurrency: runtimeConfig.BOT_CONCURRENCY,
+      captcha_enabled: runtimeConfig.CAPTCHA_SOLVER_ENABLED,
+      captcha_provider: runtimeConfig.CAPTCHA_SOLVER_PROVIDER,
+      captcha_key_set: runtimeConfig.CAPTCHA_SOLVER_API_KEY.trim().length > 0,
+    },
+    'Runtime config synced from Laravel',
+  );
+}
 
 async function runTask(task: WorkerPayload, options?: { skipStartNotification?: boolean }): Promise<void> {
   if (!config.BOT_API_TOKEN) {
@@ -60,19 +85,26 @@ function sleep(ms: number): Promise<void> {
 }
 
 async function runPollingWorker(): Promise<void> {
-  const concurrency = config.BOT_CONCURRENCY;
   const workerId = process.env.COMPUTERNAME ?? process.env.HOSTNAME ?? 'worker';
   const active = new Set<Promise<void>>();
   let discoverActive = 0;
   let idleCycles = 0;
+  let lastConfigSyncAt = 0;
 
   logger.info(
-    { concurrency, poll_interval_ms: config.BOT_POLL_INTERVAL_MS },
+    { concurrency: runtimeConfig.BOT_CONCURRENCY, poll_interval_ms: config.BOT_POLL_INTERVAL_MS },
     'Starting polling worker loop',
   );
 
   while (true) {
     try {
+      if (Date.now() - lastConfigSyncAt >= 60_000) {
+        await syncRuntimeConfigFromLaravel();
+        lastConfigSyncAt = Date.now();
+      }
+
+      const concurrency = runtimeConfig.BOT_CONCURRENCY;
+
       while (active.size < concurrency) {
         const excludeTypes = discoverActive > 0 ? ['discover_yandex_ads'] : [];
         const task = await claimNextTask(workerId, { excludeTypes });
@@ -120,7 +152,6 @@ async function runPollingWorker(): Promise<void> {
         continue;
       }
 
-      // Wait until a slot frees or poll interval elapses (to retry claim).
       await Promise.race([
         Promise.race([...active]),
         sleep(config.BOT_POLL_INTERVAL_MS),
@@ -133,19 +164,21 @@ async function runPollingWorker(): Promise<void> {
 }
 
 async function bootstrap(): Promise<void> {
+  await syncRuntimeConfigFromLaravel();
+
   logger.info(
     {
       api: config.BOT_API_BASE_URL,
       headless: config.BOT_HEADLESS,
       browser: config.BOT_BROWSER,
-      concurrency: config.BOT_CONCURRENCY,
+      concurrency: runtimeConfig.BOT_CONCURRENCY,
       poll_interval_ms: config.BOT_POLL_INTERVAL_MS,
-      captcha_solver: config.CAPTCHA_SOLVER_ENABLED ? config.CAPTCHA_SOLVER_PROVIDER : 'disabled',
+      captcha_solver: runtimeConfig.CAPTCHA_SOLVER_ENABLED ? runtimeConfig.CAPTCHA_SOLVER_PROVIDER : 'disabled',
     },
     'bot-worker started',
   );
 
-  if (config.CAPTCHA_SOLVER_ENABLED) {
+  if (runtimeConfig.CAPTCHA_SOLVER_ENABLED) {
     try {
       const status = await verifyCaptchaSolverConnection();
       logger.info(

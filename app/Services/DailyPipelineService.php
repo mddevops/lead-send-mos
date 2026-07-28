@@ -11,6 +11,7 @@ use App\Models\Proxy;
 use App\Models\Region;
 use App\Models\Site;
 use App\Support\ProxyPicker;
+use App\Support\RuntimeSettings;
 use App\Support\SubmitLeadPayloadBuilder;
 use Carbon\Carbon;
 use Illuminate\Support\Collection;
@@ -284,7 +285,7 @@ class DailyPipelineService
             $keyFromMessage = $m[1];
         }
 
-        $laravelKey = (string) env('CAPTCHA_SOLVER_API_KEY', '');
+        $laravelKey = RuntimeSettings::captchaApiKey();
         $laravelKeyHint = $laravelKey === ''
             ? '(empty)'
             : (strlen($laravelKey) <= 8
@@ -295,7 +296,7 @@ class DailyPipelineService
             'message' => $message,
             'worker_captcha_key_hint' => $keyFromMessage,
             'laravel_env_captcha_key_hint' => $laravelKeyHint,
-            'laravel_env_provider' => env('CAPTCHA_SOLVER_PROVIDER'),
+            'laravel_env_provider' => RuntimeSettings::captchaProvider(),
         ]);
 
         if (! $this->shouldSendAlert('captcha', 'alert_zero_balance_sent_at')) {

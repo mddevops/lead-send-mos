@@ -14,6 +14,7 @@ use App\Services\DailyPipelineService;
 use App\Services\ProxyHealthChecker;
 use App\Services\TelegramNotifier;
 use App\Services\YandexAdsDiscoveryService;
+use App\Support\RuntimeSettings;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Collection;
@@ -27,6 +28,16 @@ class BotWebhookController extends Controller
     public function __construct(
         private readonly TelegramNotifier $telegramNotifier,
     ) {}
+
+    public function runtimeConfig(): JsonResponse
+    {
+        RuntimeSettings::refresh();
+
+        return response()->json([
+            'ok' => true,
+            'config' => RuntimeSettings::botRuntimePayload(),
+        ]);
+    }
 
     public function claimTask(Request $request): JsonResponse
     {

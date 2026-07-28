@@ -21,6 +21,41 @@ export type ClaimedTask = {
   payload: Record<string, unknown>;
 };
 
+export async function fetchRuntimeConfig(): Promise<{
+  bot_concurrency: number;
+  captcha_solver_enabled: boolean;
+  captcha_solver_provider: '2captcha' | 'rucaptcha';
+  captcha_solver_api_key: string;
+} | null> {
+  try {
+    const response = await http.get('/bot/runtime-config');
+    const payload = response.data as {
+      config?: {
+        bot_concurrency?: number;
+        captcha_solver_enabled?: boolean;
+        captcha_solver_provider?: string;
+        captcha_solver_api_key?: string;
+      };
+    };
+
+    const cfg = payload.config;
+    if (!cfg) {
+      return null;
+    }
+
+    const provider = cfg.captcha_solver_provider === '2captcha' ? '2captcha' : 'rucaptcha';
+
+    return {
+      bot_concurrency: Number(cfg.bot_concurrency ?? 1),
+      captcha_solver_enabled: Boolean(cfg.captcha_solver_enabled),
+      captcha_solver_provider: provider,
+      captcha_solver_api_key: String(cfg.captcha_solver_api_key ?? ''),
+    };
+  } catch {
+    return null;
+  }
+}
+
 export async function claimNextTask(
   workerId?: string,
   options?: { excludeTypes?: string[] },

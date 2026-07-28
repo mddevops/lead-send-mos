@@ -50,6 +50,11 @@ class ProjectSetting extends Model
         'pipeline_scan_forms',
         'pipeline_submit_forms',
         'pipeline_telegram_chat_id',
+        'bot_concurrency',
+        'captcha_solver_provider',
+        'captcha_solver_api_key',
+        'telegram_bot_token',
+        'telegram_webhook_secret',
     ];
 
     protected function casts(): array
@@ -71,6 +76,7 @@ class ProjectSetting extends Model
             'pipeline_use_proxy' => 'boolean',
             'pipeline_scan_forms' => 'boolean',
             'pipeline_submit_forms' => 'boolean',
+            'bot_concurrency' => 'integer',
         ];
     }
 }

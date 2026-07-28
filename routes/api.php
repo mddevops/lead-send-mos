@@ -8,6 +8,8 @@ use Illuminate\Support\Facades\Route;
 Route::prefix('bot')
     ->middleware(BotApiTokenMiddleware::class)
     ->group(function (): void {
+        Route::get('/runtime-config', [BotWebhookController::class, 'runtimeConfig']);
+        Route::post('/runtime-config', [BotWebhookController::class, 'runtimeConfig']);
         Route::post('/tasks/claim', [BotWebhookController::class, 'claimTask']);
         Route::post('/tasks/{task}/started', [BotWebhookController::class, 'taskStarted']);
         Route::post('/tasks/{task}/completed', [BotWebhookController::class, 'taskCompleted']);

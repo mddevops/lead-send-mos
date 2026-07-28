@@ -4,6 +4,7 @@ namespace App\Filament\Pages;
 
 use App\Models\ProjectSetting;
 use App\Models\Region;
+use App\Support\RuntimeSettings;
 use BackedEnum;
 use Filament\Actions\Action;
 use Filament\Notifications\Notification;
@@ -49,8 +50,29 @@ class ProjectSettings extends Page implements HasForms
             $settings->save();
         }
 
+        // Seed integration fields from .env once, so existing secrets are not lost.
+        $seed = [];
+        if ((int) ($settings->bot_concurrency ?? 0) < 1) {
+            $seed['bot_concurrency'] = max(1, min(8, (int) env('BOT_CONCURRENCY', 1)));
+        }
+        if (blank($settings->captcha_solver_provider)) {
+            $seed['captcha_solver_provider'] = in_array(env('CAPTCHA_SOLVER_PROVIDER'), ['rucaptcha', '2captcha'], true)
+                ? env('CAPTCHA_SOLVER_PROVIDER')
+                : 'rucaptcha';
+        }
+        if (blank($settings->captcha_solver_api_key) && filled(env('CAPTCHA_SOLVER_API_KEY'))) {
+            $seed['captcha_solver_api_key'] = (string) env('CAPTCHA_SOLVER_API_KEY');
+        }
+        if (blank($settings->telegram_bot_token) && filled(env('TELEGRAM_BOT_TOKEN'))) {
+            $seed['telegram_bot_token'] = (string) env('TELEGRAM_BOT_TOKEN');
+        }
+        if (blank($settings->telegram_webhook_secret) && filled(env('TELEGRAM_WEBHOOK_SECRET'))) {
+            $seed['telegram_webhook_secret'] = (string) env('TELEGRAM_WEBHOOK_SECRET');
+        }
+
         // Hard defaults that are no longer editable.
         $settings->forceFill([
+            ...$seed,
             'proxy_enabled' => true,
             'pipeline_use_proxy' => true,
             'pipeline_scan_forms' => true,
@@ -61,6 +83,8 @@ class ProjectSettings extends Page implements HasForms
             'screenshot_on_submit_failed' => false,
             'screenshot_on_unknown_result' => false,
         ])->save();
+
+        RuntimeSettings::refresh();
 
         $this->form->fill($settings->fresh()->toArray());
     }
@@ -86,6 +110,42 @@ class ProjectSettings extends Page implements HasForms
                             ->helperText('Подставляется в новые ручные маппинги, если не задано иначе.')
                             ->numeric()
                             ->required(),
+                    ]),
+
+                Section::make('Интеграции / Воркер')
+                    ->description('Значения из админки имеют приоритет над .env. Bot-worker подтягивает concurrency и captcha через API.')
+                    ->columns(2)
+                    ->schema([
+                        TextInput::make('bot_concurrency')
+                            ->label('Параллельных браузеров (BOT_CONCURRENCY)')
+                            ->helperText('1–8. Локально: 1. Прод 6CPU/6GB: 3.')
+                            ->numeric()
+                            ->minValue(1)
+                            ->maxValue(8)
+                            ->required(),
+                        Select::make('captcha_solver_provider')
+                            ->label('Провайдер капчи')
+                            ->options([
+                                'rucaptcha' => 'ruCaptcha',
+                                '2captcha' => '2Captcha',
+                            ])
+                            ->required(),
+                        TextInput::make('captcha_solver_api_key')
+                            ->label('API-ключ капчи')
+                            ->password()
+                            ->revealable()
+                            ->columnSpanFull(),
+                        TextInput::make('telegram_bot_token')
+                            ->label('Telegram bot token')
+                            ->password()
+                            ->revealable()
+                            ->columnSpanFull(),
+                        TextInput::make('telegram_webhook_secret')
+                            ->label('Telegram webhook secret')
+                            ->helperText('Должен совпадать с URL webhook: /api/telegram/webhook/{secret}')
+                            ->password()
+                            ->revealable()
+                            ->columnSpanFull(),
                     ]),
 
                 Section::make('Proxy')
@@ -160,6 +220,7 @@ class ProjectSettings extends Page implements HasForms
 
         $settings->update([
             ...$state,
+            'bot_concurrency' => max(1, min(8, (int) ($state['bot_concurrency'] ?? 1))),
             'proxy_enabled' => true,
             'pipeline_use_proxy' => true,
             'pipeline_scan_forms' => true,
@@ -170,6 +231,8 @@ class ProjectSettings extends Page implements HasForms
             'screenshot_on_submit_failed' => false,
             'screenshot_on_unknown_result' => false,
         ]);
+
+        RuntimeSettings::refresh();
 
         Notification::make()
             ->title('Настройки сохранены')

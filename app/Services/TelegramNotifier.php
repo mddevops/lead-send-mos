@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Support\RuntimeSettings;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 
@@ -9,7 +10,7 @@ class TelegramNotifier
 {
     public function sendMessage(string $chatId, string $text): bool
     {
-        $token = (string) config('services.telegram.bot_token');
+        $token = RuntimeSettings::telegramBotToken();
 
         if ($token === '') {
             return false;
