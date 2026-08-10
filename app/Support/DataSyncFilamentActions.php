@@ -3,10 +3,11 @@
 namespace App\Support;
 
 use App\Models\DailyPipelineRun;
+use App\Models\ProjectSetting;
 use App\Models\Proxy;
-use App\Models\Site;
 use App\Services\DataSyncService;
 use Filament\Actions\BulkAction;
+use Filament\Forms\Components\TextInput;
 use Filament\Notifications\Notification;
 use Illuminate\Database\Eloquent\Collection;
 use Throwable;
@@ -19,17 +20,18 @@ final class DataSyncFilamentActions
             ->label('Отправить на сервер')
             ->icon('heroicon-o-cloud-arrow-up')
             ->color('primary')
-            ->requiresConfirmation()
             ->modalHeading('Отправить выбранные сайты на удалённый сервер?')
-            ->modalDescription('Уйдут сайты вместе с маппингами форм. URL берётся из Настроек проекта, токен — локальный BOT_API_TOKEN.')
+            ->modalDescription('Уйдут сайты вместе с маппингами форм. Токен — локальный BOT_API_TOKEN (тот же, что на сервере).')
+            ->modalSubmitActionLabel('Отправить')
             ->deselectRecordsAfterCompletion()
-            ->action(function (Collection $records): void {
+            ->form(self::remoteUrlFormSchema())
+            ->action(function (Collection $records, array $data): void {
                 try {
                     $ids = $records->modelKeys();
                     $sync = app(DataSyncService::class);
                     $payload = $sync->exportSites($ids);
                     $payload['replace_mappings'] = true;
-                    $result = $sync->pushToConfiguredRemote('sites', $payload);
+                    $result = $sync->pushToRemoteUrl((string) ($data['remote_url'] ?? ''), 'sites', $payload);
 
                     Notification::make()
                         ->title('Сайты отправлены ('.count($ids).')')
@@ -48,11 +50,12 @@ final class DataSyncFilamentActions
             ->label('Отправить на сервер')
             ->icon('heroicon-o-cloud-arrow-up')
             ->color('primary')
-            ->requiresConfirmation()
             ->modalHeading('Отправить выбранные прокси на удалённый сервер?')
-            ->modalDescription('URL из Настроек проекта, токен — локальный BOT_API_TOKEN.')
+            ->modalDescription('Токен — локальный BOT_API_TOKEN.')
+            ->modalSubmitActionLabel('Отправить')
             ->deselectRecordsAfterCompletion()
-            ->action(function (Collection $records): void {
+            ->form(self::remoteUrlFormSchema())
+            ->action(function (Collection $records, array $data): void {
                 try {
                     $ids = $records->modelKeys();
                     $sync = app(DataSyncService::class);
@@ -75,7 +78,7 @@ final class DataSyncFilamentActions
                         return;
                     }
 
-                    $result = $sync->pushToConfiguredRemote('proxies', $all);
+                    $result = $sync->pushToRemoteUrl((string) ($data['remote_url'] ?? ''), 'proxies', $all);
                     Notification::make()
                         ->title('Прокси отправлены ('.count($all['proxies']).')')
                         ->body(self::resultSummary($result))
@@ -93,13 +96,15 @@ final class DataSyncFilamentActions
             ->label('Экспорт API')
             ->icon('heroicon-o-cloud-arrow-up')
             ->color('primary')
-            ->requiresConfirmation()
             ->modalHeading('Отправить выбранные автопайплайны на сервер?')
-            ->modalDescription('Каждый прогон уйдёт вместе с сайтами и маппингами. Файл не скачивается — сразу POST на удалённый lead-send.')
+            ->modalDescription('Каждый прогон уйдёт вместе с сайтами и маппингами. Укажите URL целевого сервера вручную.')
+            ->modalSubmitActionLabel('Отправить')
             ->deselectRecordsAfterCompletion()
-            ->action(function (Collection $records): void {
+            ->form(self::remoteUrlFormSchema())
+            ->action(function (Collection $records, array $data): void {
                 try {
                     $sync = app(DataSyncService::class);
+                    $remoteUrl = (string) ($data['remote_url'] ?? '');
                     $sent = 0;
                     $errors = [];
 
@@ -110,7 +115,7 @@ final class DataSyncFilamentActions
                         try {
                             $payload = $sync->exportPipeline($record);
                             $payload['replace_mappings'] = true;
-                            $sync->pushToConfiguredRemote('daily-pipeline-runs', $payload);
+                            $sync->pushToRemoteUrl($remoteUrl, 'daily-pipeline-runs', $payload);
                             $sent++;
                         } catch (Throwable $e) {
                             $errors[] = '#'.$record->id.': '.$e->getMessage();
@@ -139,6 +144,29 @@ final class DataSyncFilamentActions
                     Notification::make()->title('Не удалось отправить')->body($e->getMessage())->danger()->send();
                 }
             });
+    }
+
+    /**
+     * @return array<int, TextInput>
+     */
+    private static function remoteUrlFormSchema(): array
+    {
+        return [
+            TextInput::make('remote_url')
+                ->label('URL удалённого сервера')
+                ->placeholder('https://meterorix.com')
+                ->helperText('Базовый URL без /api/… (например https://example.com). Можно указать другой сервер для разных наборов сайтов.')
+                ->url()
+                ->required()
+                ->default(fn (): ?string => self::defaultRemoteUrl()),
+        ];
+    }
+
+    private static function defaultRemoteUrl(): ?string
+    {
+        $url = trim((string) (ProjectSetting::query()->value('sync_remote_url') ?? ''));
+
+        return $url !== '' ? $url : null;
     }
 
     /**

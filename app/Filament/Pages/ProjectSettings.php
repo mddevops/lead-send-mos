@@ -201,9 +201,9 @@ class ProjectSettings extends Page implements HasForms
                             ->helperText('Обязательно: нет proxy, сбой ruCaptcha, старт/финиш автопайплайна (успех и ошибка)')
                             ->columnSpan(2),
                         TextInput::make('sync_remote_url')
-                            ->label('URL удалённого сервера (sync)')
+                            ->label('URL удалённого сервера (sync) по умолчанию')
                             ->placeholder('https://meterorix.com')
-                            ->helperText('Куда отправлять сайты / прокси / автопайплайн по API. Токен берётся из локального BOT_API_TOKEN (тот же, что на сервере).')
+                            ->helperText('Опционально: подставляется в модалку «Отправить на сервер». На страницах Sites / Автопайплайн URL всё равно можно ввести вручную. Токен — локальный BOT_API_TOKEN.')
                             ->columnSpan(2),
                     ]),
             ]);
@@ -214,7 +214,8 @@ class ProjectSettings extends Page implements HasForms
         return [
             Action::make('save')
                 ->label('Сохранить')
-                ->submit('save'),
+                // Header actions live outside <form>; ->submit() does not wire up. Call save() directly.
+                ->action(fn () => $this->save()),
         ];
     }
 

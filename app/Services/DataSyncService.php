@@ -488,8 +488,24 @@ class DataSyncService
         $remote = trim((string) ($settings?->sync_remote_url ?? ''));
         if ($remote === '') {
             throw new RuntimeException(
-                'Не задан URL удалённого сервера. Укажите его в Настройках проекта → «URL удалённого сервера (sync)».',
+                'Не задан URL удалённого сервера. Укажите его в модалке отправки или в Настройках проекта.',
             );
+        }
+
+        return $this->pushToRemoteUrl($remote, $path, $payload);
+    }
+
+    /**
+     * Push using an explicit remote base URL and local BOT_API_TOKEN.
+     *
+     * @param  array<string, mixed>  $payload
+     * @return array<string, mixed>
+     */
+    public function pushToRemoteUrl(string $remoteBaseUrl, string $path, array $payload): array
+    {
+        $remote = trim($remoteBaseUrl);
+        if ($remote === '') {
+            throw new RuntimeException('Укажите URL удалённого сервера.');
         }
 
         $token = trim((string) config('services.bot_worker.token', ''));
