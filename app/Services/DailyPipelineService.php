@@ -588,10 +588,12 @@ class DailyPipelineService
             $ids[(int) $pipeline->campaign_id] = (int) $pipeline->campaign_id;
         }
 
-        foreach ($pipeline->report['counted_campaign_ids'] ?? [] as $id) {
-            $id = (int) $id;
-            if ($id > 0) {
-                $ids[$id] = $id;
+        foreach (['all_campaign_ids', 'counted_campaign_ids'] as $key) {
+            foreach ($pipeline->report[$key] ?? [] as $id) {
+                $id = (int) $id;
+                if ($id > 0) {
+                    $ids[$id] = $id;
+                }
             }
         }
 
@@ -609,8 +611,36 @@ class DailyPipelineService
     }
 
     /**
+     * Remember a submit campaign on the pipeline so stop/restart keeps Отправлено/Ошибки.
+     */
+    public function rememberCampaignId(DailyPipelineRun $pipeline, int $campaignId): void
+    {
+        if ($campaignId < 1) {
+            return;
+        }
+
+        $pipeline->refresh();
+        $report = is_array($pipeline->report) ? $pipeline->report : [];
+        $all = [];
+        foreach ($report['all_campaign_ids'] ?? [] as $id) {
+            $id = (int) $id;
+            if ($id > 0) {
+                $all[$id] = $id;
+            }
+        }
+        $all[$campaignId] = $campaignId;
+
+        $pipeline->update([
+            'report' => array_merge($report, [
+                'all_campaign_ids' => array_values($all),
+            ]),
+        ]);
+    }
+
+    /**
      * Per-site submit counters for the pipeline view table.
      * Live CampaignSiteRun wins; imported sync stats fill gaps (remote report without local campaigns).
+     * «Отправлено» = завершённые попытки (success/failed/unknown), без pending/skipped.
      *
      * @return array<int, array{total:int, success:int, failed:int, unknown:int, pending:int}>
      */
@@ -624,11 +654,15 @@ class DailyPipelineService
                 if (! is_array($row)) {
                     continue;
                 }
+                $success = (int) ($row['success'] ?? 0);
+                $failed = (int) ($row['failed'] ?? 0);
+                $unknown = (int) ($row['unknown'] ?? 0);
+                $finished = $success + $failed + $unknown;
                 $stats[(int) $siteId] = [
-                    'total' => (int) ($row['total'] ?? 0),
-                    'success' => (int) ($row['success'] ?? 0),
-                    'failed' => (int) ($row['failed'] ?? 0),
-                    'unknown' => (int) ($row['unknown'] ?? 0),
+                    'total' => $finished > 0 ? $finished : (int) ($row['total'] ?? 0),
+                    'success' => $success,
+                    'failed' => $failed,
+                    'unknown' => $unknown,
                     'pending' => (int) ($row['pending'] ?? 0),
                 ];
             }
@@ -643,7 +677,7 @@ class DailyPipelineService
             ->whereIn('campaign_id', $campaignIds)
             ->selectRaw("
                 site_id,
-                COUNT(*) as total,
+                SUM(CASE WHEN status IN ('success', 'failed', 'unknown') THEN 1 ELSE 0 END) as total,
                 SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) as success_count,
                 SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as failed_count,
                 SUM(CASE WHEN status = 'unknown' THEN 1 ELSE 0 END) as unknown_count,
@@ -653,13 +687,27 @@ class DailyPipelineService
             ->get();
 
         foreach ($rows as $row) {
-            $stats[(int) $row->site_id] = [
+            $siteId = (int) $row->site_id;
+            $live = [
                 'total' => (int) $row->total,
                 'success' => (int) $row->success_count,
                 'failed' => (int) $row->failed_count,
                 'unknown' => (int) $row->unknown_count,
                 'pending' => (int) $row->pending_count,
             ];
+
+            // Don't wipe imported / previous finished stats with a fresh pending-only lap.
+            if (
+                $live['total'] === 0
+                && isset($stats[$siteId])
+                && ((int) $stats[$siteId]['total'] > 0 || (int) $stats[$siteId]['failed'] > 0)
+            ) {
+                $stats[$siteId]['pending'] = $live['pending'];
+
+                continue;
+            }
+
+            $stats[$siteId] = $live;
         }
 
         return $stats;
@@ -1621,6 +1669,7 @@ class DailyPipelineService
         ]);
 
         $pipeline->update(['campaign_id' => $campaign->id]);
+        $this->rememberCampaignId($pipeline, (int) $campaign->id);
 
         $queued = 0;
 
@@ -1747,6 +1796,9 @@ class DailyPipelineService
 
         if ($pipeline->campaign_id) {
             $campaign = Campaign::query()->find($pipeline->campaign_id);
+            if ($campaign) {
+                $this->rememberCampaignId($pipeline, (int) $campaign->id);
+            }
             if ($campaign && in_array($campaign->status, ['queued', 'processing'], true)) {
                 $runIds = $campaign->runs()->pluck('id');
                 BotTask::query()
