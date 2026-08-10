@@ -9,6 +9,8 @@ use App\Support\DataSyncFilamentActions;
 use Filament\Actions\Action;
 use Filament\Actions\BulkAction;
 use Filament\Actions\BulkActionGroup;
+use Filament\Actions\DeleteAction;
+use Filament\Actions\DeleteBulkAction;
 use Filament\Actions\ViewAction;
 use Filament\Forms\Components\Radio;
 use Filament\Notifications\Notification;
@@ -159,6 +161,16 @@ class DailyPipelineRunsTable
                             ->success()
                             ->send();
                     }),
+                DeleteAction::make()
+                    ->label('Удалить')
+                    ->modalHeading('Удалить автопайплайн?')
+                    ->modalDescription('Удалится только запись прогона. Сайты и маппинги форм не трогаем.')
+                    ->successNotificationTitle('Автопайплайн удалён')
+                    ->before(function (DailyPipelineRun $record): void {
+                        if ($record->isStoppable()) {
+                            app(DailyPipelineService::class)->stop($record);
+                        }
+                    }),
             ])
             ->bulkActions([
                 BulkActionGroup::make([
@@ -175,6 +187,19 @@ class DailyPipelineRunsTable
                                 ->title($n > 0 ? "Остановлено: {$n}" : 'Среди выбранных нет активных')
                                 ->{$n > 0 ? 'success' : 'warning'}()
                                 ->send();
+                        }),
+                    DeleteBulkAction::make()
+                        ->label('Удалить выбранные')
+                        ->modalHeading('Удалить выбранные автопайплайны?')
+                        ->modalDescription('Удалятся только записи прогонов. Сайты и маппинги форм останутся.')
+                        ->successNotificationTitle('Автопайплайны удалены')
+                        ->before(function (Collection $records): void {
+                            $service = app(DailyPipelineService::class);
+                            foreach ($records as $record) {
+                                if ($record instanceof DailyPipelineRun && $record->isStoppable()) {
+                                    $service->stop($record);
+                                }
+                            }
                         }),
                 ]),
             ]);

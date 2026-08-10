@@ -10,6 +10,7 @@ use App\Models\Site;
 use App\Services\DailyPipelineService;
 use App\Support\PipelineSitesExcelExport;
 use Filament\Actions\Action;
+use Filament\Actions\DeleteAction;
 use Filament\Forms\Components\Radio;
 use Filament\Notifications\Notification;
 use Filament\Resources\Pages\ViewRecord;
@@ -280,6 +281,18 @@ class ViewDailyPipelineRun extends ViewRecord implements HasTable
                         ->send();
                     $this->record->refresh();
                     $this->refreshPipelineStats();
+                }),
+            DeleteAction::make()
+                ->label('Удалить')
+                ->modalHeading('Удалить автопайплайн?')
+                ->modalDescription('Удалится только запись прогона. Сайты и маппинги форм не трогаем.')
+                ->successNotificationTitle('Автопайплайн удалён')
+                ->before(function (): void {
+                    /** @var DailyPipelineRun $record */
+                    $record = $this->record;
+                    if ($record->isStoppable()) {
+                        app(DailyPipelineService::class)->stop($record);
+                    }
                 }),
         ];
     }
