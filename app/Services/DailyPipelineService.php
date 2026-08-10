@@ -610,14 +610,33 @@ class DailyPipelineService
 
     /**
      * Per-site submit counters for the pipeline view table.
+     * Live CampaignSiteRun wins; imported sync stats fill gaps (remote report without local campaigns).
      *
      * @return array<int, array{total:int, success:int, failed:int, unknown:int, pending:int}>
      */
     public function submitStatsBySite(DailyPipelineRun $pipeline): array
     {
+        $stats = [];
+
+        $imported = $pipeline->report['imported_site_submit_stats'] ?? [];
+        if (is_array($imported)) {
+            foreach ($imported as $siteId => $row) {
+                if (! is_array($row)) {
+                    continue;
+                }
+                $stats[(int) $siteId] = [
+                    'total' => (int) ($row['total'] ?? 0),
+                    'success' => (int) ($row['success'] ?? 0),
+                    'failed' => (int) ($row['failed'] ?? 0),
+                    'unknown' => (int) ($row['unknown'] ?? 0),
+                    'pending' => (int) ($row['pending'] ?? 0),
+                ];
+            }
+        }
+
         $campaignIds = $this->campaignIdsFor($pipeline);
         if ($campaignIds === []) {
-            return [];
+            return $stats;
         }
 
         $rows = CampaignSiteRun::query()
@@ -633,7 +652,6 @@ class DailyPipelineService
             ->groupBy('site_id')
             ->get();
 
-        $stats = [];
         foreach ($rows as $row) {
             $stats[(int) $row->site_id] = [
                 'total' => (int) $row->total,
@@ -685,6 +703,28 @@ class DailyPipelineService
             }
             if ($endRaw) {
                 $end = Carbon::parse($endRaw)->timezone($tz);
+            }
+        }
+
+        if ($start === null) {
+            $importedStart = $pipeline->report['imported_submit_started_at'] ?? null;
+            if (is_string($importedStart) && $importedStart !== '') {
+                try {
+                    $start = Carbon::parse($importedStart)->timezone($tz);
+                } catch (\Throwable) {
+                    // ignore bad imported timestamp
+                }
+            }
+        }
+
+        if ($end === null) {
+            $importedEnd = $pipeline->report['imported_submit_ended_at'] ?? null;
+            if (is_string($importedEnd) && $importedEnd !== '') {
+                try {
+                    $end = Carbon::parse($importedEnd)->timezone($tz);
+                } catch (\Throwable) {
+                    // ignore bad imported timestamp
+                }
             }
         }
 

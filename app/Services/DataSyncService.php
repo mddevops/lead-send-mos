@@ -215,6 +215,7 @@ class DataSyncService
                 ->all();
         }
 
+        $pipelineService = app(DailyPipelineService::class);
         $sitesPayload = $this->exportSites($siteIds);
 
         $siteUrlById = [];
@@ -237,6 +238,28 @@ class DataSyncService
                 $siteUrls[] = $siteUrlById[$id];
             }
         }
+
+        // Per-site «Отправлено / Ошибки» — иначе на удалённом сервере таблица и Excel пустые
+        // (там нет локальных CampaignSiteRun исходного прогона).
+        $siteSubmitStats = [];
+        foreach ($pipelineService->submitStatsBySite($pipeline) as $siteId => $stats) {
+            if (! isset($siteUrlById[$siteId])) {
+                continue;
+            }
+            $siteSubmitStats[] = [
+                'url' => $siteUrlById[$siteId],
+                'total' => (int) ($stats['total'] ?? 0),
+                'success' => (int) ($stats['success'] ?? 0),
+                'failed' => (int) ($stats['failed'] ?? 0),
+                'unknown' => (int) ($stats['unknown'] ?? 0),
+                'pending' => (int) ($stats['pending'] ?? 0),
+            ];
+        }
+
+        $submitRange = $pipelineService->submitTimeRange($pipeline);
+        $report = is_array($pipeline->report) ? $pipeline->report : [];
+        // Local campaign IDs are meaningless on the remote instance.
+        unset($report['counted_campaign_ids']);
 
         return [
             'version' => self::VERSION,
@@ -264,7 +287,10 @@ class DataSyncService
                 'submit_success_count' => (int) $pipeline->submit_success_count,
                 'submit_failed_count' => (int) $pipeline->submit_failed_count,
                 'submit_unknown_count' => (int) $pipeline->submit_unknown_count,
-                'report' => $pipeline->report,
+                'site_submit_stats' => $siteSubmitStats,
+                'submit_started_at' => optional($submitRange['start'])?->toIso8601String(),
+                'submit_ended_at' => optional($submitRange['end'])?->toIso8601String(),
+                'report' => $report,
                 'started_at' => optional($pipeline->started_at)?->toIso8601String(),
                 'deadline_at' => optional($pipeline->deadline_at)?->toIso8601String(),
                 'discovery_finished_at' => optional($pipeline->discovery_finished_at)?->toIso8601String(),
@@ -423,6 +449,46 @@ class DataSyncService
                 $status = 'cancelled';
             }
 
+            $report = is_array($pipelineData['report'] ?? null) ? $pipelineData['report'] : [];
+            unset($report['counted_campaign_ids']);
+
+            $importedSiteStats = [];
+            $rawSiteStats = is_array($pipelineData['site_submit_stats'] ?? null)
+                ? $pipelineData['site_submit_stats']
+                : [];
+            foreach ($rawSiteStats as $row) {
+                if (! is_array($row)) {
+                    continue;
+                }
+                $u = trim((string) ($row['url'] ?? ''));
+                if ($u === '') {
+                    continue;
+                }
+                $resolvedId = $urlToId[$u]
+                    ?? $urlToId[YandexMapsSiteImporter::normalizeUrl($u) ?? '']
+                    ?? $urlToId[YandexMapsSiteImporter::normalizeDomain($u) ?? '']
+                    ?? null;
+                if (! $resolvedId) {
+                    $domain = YandexMapsSiteImporter::normalizeDomain($u);
+                    $found = $domain ? YandexMapsSiteImporter::findByDomain($domain) : null;
+                    $resolvedId = $found?->id;
+                }
+                if (! $resolvedId) {
+                    continue;
+                }
+                $importedSiteStats[(int) $resolvedId] = [
+                    'total' => (int) ($row['total'] ?? 0),
+                    'success' => (int) ($row['success'] ?? 0),
+                    'failed' => (int) ($row['failed'] ?? 0),
+                    'unknown' => (int) ($row['unknown'] ?? 0),
+                    'pending' => (int) ($row['pending'] ?? 0),
+                ];
+            }
+            $report['imported_site_submit_stats'] = $importedSiteStats;
+            $report['imported_submit_started_at'] = $pipelineData['submit_started_at'] ?? null;
+            $report['imported_submit_ended_at'] = $pipelineData['submit_ended_at'] ?? null;
+            $report['sites_count'] = count($siteIds);
+
             DailyPipelineRun::query()->create([
                 'run_date' => $this->parseDate($pipelineData['run_date'] ?? null) ?? now()->toDateString(),
                 'status' => $status,
@@ -453,7 +519,7 @@ class DataSyncService
                 'submit_failed_count' => (int) ($pipelineData['submit_failed_count'] ?? 0),
                 'submit_unknown_count' => (int) ($pipelineData['submit_unknown_count'] ?? 0),
                 'error_message' => $pipelineData['error_message'] ?? 'Импортировано через API sync',
-                'report' => is_array($pipelineData['report'] ?? null) ? $pipelineData['report'] : [],
+                'report' => $report,
                 'started_at' => $this->parseDateTime($pipelineData['started_at'] ?? null),
                 'deadline_at' => $this->parseDateTime($pipelineData['deadline_at'] ?? null),
                 'discovery_finished_at' => $this->parseDateTime($pipelineData['discovery_finished_at'] ?? null),
