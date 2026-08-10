@@ -152,10 +152,19 @@ async function waitForToken(page: Page, formRoot: Locator, tokenSelectors: strin
       }
     }
 
-    await page.waitForTimeout(500);
+    if (timeoutMs <= 0) {
+      break;
+    }
+
+    await page.waitForTimeout(Math.min(500, Math.max(0, deadline - Date.now())));
   }
 
   return false;
+}
+
+/** Fast check: token already filled (no polling delay). */
+async function hasCaptchaToken(page: Page, formRoot: Locator, tokenSelectors: string[]): Promise<boolean> {
+  return waitForToken(page, formRoot, tokenSelectors, 0);
 }
 
 async function findImageCaptchaOnRoot(root: Page | FrameLocator): Promise<ImageCaptchaElements | null> {
@@ -299,10 +308,17 @@ async function solveYandexImageCaptcha(
   maxAttempts = 2,
 ): Promise<boolean> {
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    // Already passed while a previous attempt / poll was in flight.
+    if (await hasCaptchaToken(page, formRoot, tokenSelectors) || await isYandexCheckboxPassed(page, iframeSelectors)) {
+      logger.info({ attempt }, 'Image captcha: already verified — stop');
+      return true;
+    }
+
     const challenge = await findImageCaptcha(page, iframeSelectors);
 
     if (!challenge) {
-      return false;
+      return await hasCaptchaToken(page, formRoot, tokenSelectors)
+        || await isYandexCheckboxPassed(page, iframeSelectors);
     }
 
     logger.info({ attempt }, 'Yandex image captcha detected, solving');
@@ -317,6 +333,16 @@ async function solveYandexImageCaptcha(
       continue;
     }
 
+    // Page-crop of a disappearing widget is ~300 bytes garbage — do not burn RuCaptcha on it.
+    if (imageBase64.length < 1500) {
+      logger.warn({ attempt, bytes: imageBase64.length }, 'Captcha image too small — skip send to solver');
+      if (await hasCaptchaToken(page, formRoot, tokenSelectors) || await isYandexCheckboxPassed(page, iframeSelectors)) {
+        return true;
+      }
+      await page.waitForTimeout(400);
+      continue;
+    }
+
     let solution: string;
 
     try {
@@ -324,7 +350,10 @@ async function solveYandexImageCaptcha(
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       logger.error({ message }, 'Image captcha solver failed');
-      // Do not kill the whole submit_lead — form may already be accepted.
+      if (await hasCaptchaToken(page, formRoot, tokenSelectors) || await isYandexCheckboxPassed(page, iframeSelectors)) {
+        logger.info({ attempt }, 'Solver failed but captcha already verified — treat as solved');
+        return true;
+      }
       continue;
     }
 
@@ -332,18 +361,42 @@ async function solveYandexImageCaptcha(
 
     await typeLikeHuman(challenge.input, solution);
     await challenge.submit.click({ timeout: 8000 });
-    await page.waitForTimeout(randomPause(1200, 2000));
 
-    if (await waitForToken(page, formRoot, tokenSelectors, 8000)) {
-      return true;
+    // Text captcha often leaves no smart-token in DOM — success = UI gone / checkbox verified.
+    const settleDeadline = Date.now() + 2500;
+    while (Date.now() < settleDeadline) {
+      if (await hasCaptchaToken(page, formRoot, tokenSelectors)) {
+        logger.info({ attempt }, 'Image captcha: token ready');
+        return true;
+      }
+
+      if (await isYandexCheckboxPassed(page, iframeSelectors)) {
+        logger.info({ attempt }, 'Image captcha: checkbox verified after submit');
+        return true;
+      }
+
+      if (!(await isImageCaptchaVisible(page, iframeSelectors))) {
+        logger.info({ attempt }, 'Image captcha UI gone after submit — treated as solved');
+        return true;
+      }
+
+      await page.waitForTimeout(200);
     }
 
-    if (!(await isImageCaptchaVisible(page, iframeSelectors))) {
-      return waitForToken(page, formRoot, tokenSelectors, 5000);
+    if (await isImageCaptchaVisible(page, iframeSelectors)) {
+      if (await hasCaptchaToken(page, formRoot, tokenSelectors) || await isYandexCheckboxPassed(page, iframeSelectors)) {
+        return true;
+      }
+      logger.warn({ attempt }, 'Image captcha still visible — retry');
+      continue;
     }
+
+    logger.info({ attempt }, 'Image captcha cleared');
+    return true;
   }
 
-  return false;
+  return await hasCaptchaToken(page, formRoot, tokenSelectors)
+    || await isYandexCheckboxPassed(page, iframeSelectors);
 }
 
 async function extractYandexSitekey(page: Page): Promise<string | null> {
@@ -468,6 +521,12 @@ async function trySolveYandexImageOrToken(
 async function clickCaptchaCheckbox(page: Page, iframeSelectors: string[], checkboxSelectors: string[]): Promise<boolean> {
   const allSelectors = [...new Set([...YANDEX_CHECKBOX_SELECTORS, ...checkboxSelectors])];
 
+  // Already verified (text/icons done) — do NOT re-click #js-button (type=submit).
+  if (await isYandexCheckboxPassed(page, iframeSelectors)) {
+    logger.info('Captcha checkbox already verified — skip click');
+    return true;
+  }
+
   // 1) Page-level first — showcaptcha renders CheckboxCaptcha without iframe.
   for (const checkboxSelector of allSelectors) {
     const checkbox = page.locator(checkboxSelector).first();
@@ -476,8 +535,12 @@ async function clickCaptchaCheckbox(page: Page, iframeSelectors: string[], check
       continue;
     }
 
-    if (!(await checkbox.isVisible().catch(() => false))) {
-      continue;
+    // SmartCaptcha may report opacity:0 — still click if it has a box.
+    const box = await checkbox.boundingBox().catch(() => null);
+    if (!box || box.width < 4 || box.height < 4) {
+      if (!(await checkbox.isVisible().catch(() => false))) {
+        continue;
+      }
     }
 
     await checkbox.scrollIntoViewIfNeeded().catch(() => undefined);
@@ -485,20 +548,20 @@ async function clickCaptchaCheckbox(page: Page, iframeSelectors: string[], check
 
     logger.info({ checkboxSelector, url: page.url() }, 'Clicking page-level Yandex checkbox');
 
-    await Promise.all([
-      page.waitForLoadState('domcontentloaded').catch(() => undefined),
-      checkbox.click({ timeout: 8000 }).catch(() => undefined),
-    ]);
-
-    await page.waitForTimeout(randomPause(1500, 2500));
+    await checkbox.click({ timeout: 8000, force: true }).catch(() => undefined);
+    await page.waitForTimeout(randomPause(800, 1500));
 
     return true;
   }
 
   // 2) Checkbox inside captcha iframes (embedded SmartCaptcha widgets).
-  const framesToTry = iframeSelectors.length > 0 ? iframeSelectors : ['iframe'];
+  const framesToTry = [
+    ...iframeSelectors,
+    ...YANDEX_CHECKBOX_IFRAME_SELECTORS,
+    'iframe',
+  ];
 
-  for (const iframeSelector of framesToTry) {
+  for (const iframeSelector of [...new Set(framesToTry)]) {
     const iframeCount = await page.locator(iframeSelector).count();
 
     for (let index = 0; index < Math.min(iframeCount, 3); index += 1) {
@@ -511,19 +574,42 @@ async function clickCaptchaCheckbox(page: Page, iframeSelectors: string[], check
           continue;
         }
 
-        if (!(await checkbox.isVisible().catch(() => false))) {
-          continue;
-        }
-
         await checkbox.scrollIntoViewIfNeeded().catch(() => undefined);
         await page.waitForTimeout(randomPause(300, 700));
-        await checkbox.click({ timeout: 8000 }).catch(() => undefined);
+        await checkbox.click({ timeout: 8000, force: true }).catch(() => undefined);
         await page.waitForTimeout(1200);
 
         logger.info({ iframeSelector, checkboxSelector }, 'Clicked captcha checkbox in iframe');
 
         return true;
       }
+    }
+  }
+
+  // 3) Direct frame.evaluate click — bypasses Playwright visibility/opacity gates.
+  for (const frame of page.frames()) {
+    if (!/smartcaptcha|captcha\.yandex|checkbox/i.test(frame.url())) {
+      continue;
+    }
+
+    const clicked = await frame.evaluate(() => {
+      const btn = document.querySelector(
+        '#js-button, .CheckboxCaptcha-Button, [role="checkbox"], input.CheckboxCaptcha-Button',
+      ) as HTMLElement | null;
+      if (!btn) {
+        return false;
+      }
+      if (btn.getAttribute('aria-checked') === 'true') {
+        return 'already';
+      }
+      btn.click();
+      return true;
+    }).catch(() => false);
+
+    if (clicked === 'already' || clicked === true) {
+      logger.info({ frameUrl: frame.url().slice(0, 120), clicked }, 'Captcha checkbox clicked via frame.evaluate');
+      await page.waitForTimeout(1200);
+      return true;
     }
   }
 
@@ -1104,6 +1190,77 @@ const YANDEX_CHECKBOX_SELECTORS = [
   'form#checkbox-captcha-form input[type="submit"]',
 ];
 
+const YANDEX_CHECKBOX_IFRAME_SELECTORS = [
+  'iframe[data-testid="checkbox-iframe"]',
+  'iframe[src*="checkbox"]',
+  'iframe[src*="smartcaptcha"]',
+  'iframe[src*="captcha.yandex"]',
+  'iframe[data-testid="advanced-iframe"]',
+];
+
+/**
+ * SmartCaptcha often keeps the checkbox iframe after text/icons success.
+ * Use frame.evaluate (no Playwright auto-wait) — frameLocator+getAttribute hangs 30s+.
+ */
+async function isYandexCheckboxPassed(
+  page: Page,
+  _iframeSelectors: string[] = [],
+): Promise<boolean> {
+  const checkFn = (): boolean => {
+    const btn = document.querySelector(
+      '#js-button, .CheckboxCaptcha-Button[role="checkbox"], [data-testid="checkbox-captcha"] [role="checkbox"], [role="checkbox"].CheckboxCaptcha-Button',
+    );
+    if (btn?.getAttribute('aria-checked') === 'true') {
+      return true;
+    }
+
+    if (
+      document.querySelector(
+        '.CheckboxCaptcha-Checkbox[data-checked="true"], .CheckboxCaptcha_checked, [data-testid="checkbox-captcha"][data-checked="true"]',
+      )
+    ) {
+      return true;
+    }
+
+    const live = document.querySelector('[aria-live="assertive"]');
+    const liveText = (live?.textContent || '').trim();
+    if (/пользователь проверен|user verified/i.test(liveText)) {
+      return true;
+    }
+
+    return false;
+  };
+
+  try {
+    if (await page.mainFrame().evaluate(checkFn)) {
+      return true;
+    }
+  } catch {
+    // ignore
+  }
+
+  for (const frame of page.frames()) {
+    if (frame === page.mainFrame()) {
+      continue;
+    }
+
+    const frameUrl = frame.url();
+    if (!/smartcaptcha|captcha\.yandex|checkbox\.ru|\/checkbox/i.test(frameUrl)) {
+      continue;
+    }
+
+    try {
+      if (await frame.evaluate(checkFn)) {
+        return true;
+      }
+    } catch {
+      // cross-origin / detached
+    }
+  }
+
+  return false;
+}
+
 const YANDEX_ICONS_SELECTORS = {
   advancedIframe: 'iframe[data-testid="advanced-iframe"], iframe[src*="smartcaptcha"], iframe[src*="captcha.yandex"]',
   mainImage: '.AdvancedCaptcha-ImageWrapper img, .AdvancedCaptcha-View img, .AdvancedCaptcha-Image img',
@@ -1254,6 +1411,29 @@ export async function resolveCaptcha(
     ? [effectiveConfig.captcha_token_selector]
     : defaults.tokenSelectors;
 
+  // Already solved — do not re-enter checkbox/slider/icons (each drain used to cost 15–60s).
+  if (await hasCaptchaToken(page, formRoot, tokenSelectors)) {
+    const hardChallenge = await isInteractiveChallengeVisible(
+      page,
+      iframeSelectors,
+      defaults.sliderThumbSelectors,
+    );
+    if (!hardChallenge || hardChallenge === 'checkbox') {
+      logger.info({ captchaType, phase }, 'Captcha token already present — skip resolve');
+      return true;
+    }
+  }
+
+  // Text captcha finished: only the verified "Я не робот" shell remains (often inside iframe).
+  if (
+    !(await isImageCaptchaVisible(page, iframeSelectors))
+    && !(await isIconsCaptchaVisible(page, iframeSelectors))
+    && await isYandexCheckboxPassed(page, iframeSelectors)
+  ) {
+    logger.info({ captchaType, phase }, 'Checkbox already passed (iframe/page) — skip resolve');
+    return true;
+  }
+
   const mappedMode = normalizeYandexMode(effectiveConfig.captcha_yandex_mode);
 
   const challenge = await waitForInteractiveChallenge(
@@ -1302,6 +1482,12 @@ export async function resolveCaptcha(
       ...defaults.checkboxSelectors,
     ];
 
+    // Verified checkbox after text captcha — proceed to form submit immediately.
+    if (await isYandexCheckboxPassed(page, iframeSelectors)) {
+      logger.info({ captchaType, phase }, 'Checkbox already verified — treat as solved');
+      return true;
+    }
+
     logger.info({ captchaType, iframeSelectors, checkboxSelectors }, 'Resolving checkbox captcha');
 
     const clicked = await clickCaptchaCheckbox(page, iframeSelectors, checkboxSelectors);
@@ -1312,12 +1498,23 @@ export async function resolveCaptcha(
       return false;
     }
 
-    // After checkbox, Yandex may show slider, text image, or icon sequence.
+    // Token may appear right after checkbox — don't burn 10–12s waiting for icons.
+    if (await waitForToken(page, formRoot, tokenSelectors, 800)) {
+      logger.info({ captchaType }, 'Captcha token ready right after checkbox');
+      return true;
+    }
+
+    if (await isYandexCheckboxPassed(page, iframeSelectors)) {
+      logger.info({ captchaType }, 'Checkbox verified after click (no token yet) — treat as solved');
+      return true;
+    }
+
+    // Short poll for icons/slider/image (max ~4s), not a blind 12s wait.
     const next = await waitForInteractiveChallenge(
       page,
       iframeSelectors,
       defaults.sliderThumbSelectors,
-      phase === 'post-submit' ? 12000 : 10000,
+      4000,
     );
 
     if (next === 'icons' || await isIconsCaptchaVisible(page, iframeSelectors)) {
@@ -1386,9 +1583,15 @@ export async function resolveCaptcha(
       return true;
     }
 
-    if (await waitForToken(page, formRoot, tokenSelectors, 15000)) {
+    if (await waitForToken(page, formRoot, tokenSelectors, 3000)) {
       logger.info({ captchaType }, 'Captcha resolved after checkbox');
 
+      return true;
+    }
+
+    // Text challenge already done: widget shows checkmark but often no smart-token in DOM.
+    if (await isYandexCheckboxPassed(page, iframeSelectors)) {
+      logger.info({ captchaType }, 'Checkbox verified without smart-token — treat as solved');
       return true;
     }
 
@@ -1500,6 +1703,40 @@ function mergeCaptchaConfig(base: CaptchaConfig, live: CaptchaConfig): CaptchaCo
  * (fullscreen overlay, modal, or inline next to the form).
  */
 export async function detectLiveCaptchaConfig(page: Page): Promise<CaptchaConfig | null> {
+  // SmartCaptcha iframes often load with opacity:0 — still interactive. Prefer frame URL.
+  const yandexFrame = page.frames().some((frame) => {
+    const url = frame.url();
+    return /smartcaptcha\.yandex|captcha\.yandexcloud|captcha\.yandex\.ru/i.test(url);
+  });
+
+  if (yandexFrame) {
+    let slider = false;
+    for (const frame of page.frames()) {
+      if (!/smartcaptcha|captcha\.yandex/i.test(frame.url())) {
+        continue;
+      }
+      slider = await frame.evaluate(() => {
+        return !!(
+          document.querySelector('#captcha-slider, [data-testid="thumb"], .AdvancedCaptcha_image, input[name="rep"]')
+        );
+      }).catch(() => false);
+      if (slider) {
+        break;
+      }
+    }
+
+    return {
+      captcha_type: 'yandex_smartcaptcha',
+      captcha_yandex_mode: slider ? 'slider' : 'checkbox',
+      captcha_iframe_selector:
+        'iframe[data-testid="advanced-iframe"], iframe[data-testid="checkbox-iframe"], iframe[src*="smartcaptcha"], iframe[src*="captcha.yandex"], iframe[src*="checkbox"]',
+      captcha_checkbox_selector: slider
+        ? '#captcha-slider, [data-testid="thumb"]'
+        : '#js-button, .CheckboxCaptcha-Button, [role="checkbox"]',
+      captcha_token_selector: 'input[name="smart-token"]',
+    };
+  }
+
   const kind = await page.evaluate(() => {
     const isVisible = (el: Element | null): boolean => {
       if (!el || !(el instanceof HTMLElement)) {
@@ -1509,11 +1746,16 @@ export async function detectLiveCaptchaConfig(page: Page): Promise<CaptchaConfig
       const style = window.getComputedStyle(el);
       const rect = el.getBoundingClientRect();
 
-      if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity) === 0) {
+      if (style.display === 'none' || style.visibility === 'hidden') {
         return false;
       }
 
-      // Fullscreen overlays can be large; tiny 1×1 trackers ignored.
+      const src = el.tagName === 'IFRAME' ? (el.getAttribute('src') || '') : '';
+      const isCaptchaFrame = /smartcaptcha|captcha\.yandex|recaptcha|hcaptcha/i.test(src);
+      if (!isCaptchaFrame && Number(style.opacity) === 0) {
+        return false;
+      }
+
       return rect.width >= 20 && rect.height >= 20;
     };
 
@@ -1608,8 +1850,11 @@ export async function detectLiveCaptchaConfig(page: Page): Promise<CaptchaConfig
 }
 
 export type FormCaptchaWatcher = {
-  /** Wait for in-flight solve, then scan+solve once more. */
-  drain: () => Promise<boolean>;
+  /**
+   * Wait for in-flight solve, then scan+solve.
+   * @param waitForAppearMs how long to poll for a late-appearing widget (phone fill → SmartCaptcha).
+   */
+  drain: (waitForAppearMs?: number) => Promise<boolean>;
   stop: () => void;
   wasSolved: () => boolean;
 };
@@ -1628,6 +1873,55 @@ export function attachFormCaptchaWatcher(
   let solving = false;
   let activeSolve: Promise<void> | null = null;
   let solvedCount = 0;
+  let lastSolvedAt = 0;
+
+  const defaultTokenSelectors = (): string[] => {
+    const type = normalizeCaptchaType(baseConfig.captcha_type);
+    if (type === 'none') {
+      return [
+        'input[name="smart-token"]',
+        'textarea[name="g-recaptcha-response"]',
+        'textarea[name="h-captcha-response"]',
+        '#g-recaptcha-response',
+      ];
+    }
+    const defaults = CAPTCHA_DEFAULTS[type];
+    return baseConfig.captcha_token_selector
+      ? [baseConfig.captcha_token_selector, ...defaults.tokenSelectors]
+      : defaults.tokenSelectors;
+  };
+
+  const alreadyReady = async (): Promise<boolean> => {
+    const iframeSelectors = CAPTCHA_DEFAULTS.yandex_smartcaptcha.iframeSelectors;
+
+    // Token / verified checkbox beat stale AdvancedCaptcha DOM still in the iframe.
+    // Without this, drain/poll re-send the same image to RuCaptcha for minutes.
+    if (await hasCaptchaToken(page, formRoot, defaultTokenSelectors())) {
+      return true;
+    }
+
+    if (await isYandexCheckboxPassed(page, iframeSelectors)) {
+      return true;
+    }
+
+    const hard = await isInteractiveChallengeVisible(
+      page,
+      iframeSelectors,
+      CAPTCHA_DEFAULTS.yandex_smartcaptcha.sliderThumbSelectors,
+    ).catch(() => null);
+
+    // After a successful slider/image solve the AdvancedCaptcha shell often lingers —
+    // do NOT re-enter RuCaptcha for minutes. Only icons is treated as a fresh challenge.
+    if (solvedCount > 0 && hard !== 'icons') {
+      return true;
+    }
+
+    if (hard === 'image' || hard === 'icons' || hard === 'slider' || hard === 'checkbox') {
+      return false;
+    }
+
+    return false;
+  };
 
   const runSolve = (reason: string): void => {
     if (stopped || solving) {
@@ -1637,6 +1931,11 @@ export function attachFormCaptchaWatcher(
     solving = true;
     activeSolve = (async () => {
       try {
+        if (await alreadyReady()) {
+          logger.info({ reason }, 'Form captcha watcher: token ready — skip');
+          return;
+        }
+
         const live = await detectLiveCaptchaConfig(page);
 
         if (!live && normalizeCaptchaType(baseConfig.captcha_type) === 'none') {
@@ -1662,6 +1961,7 @@ export function attachFormCaptchaWatcher(
 
         if (ok) {
           solvedCount += 1;
+          lastSolvedAt = Date.now();
           logger.info({ reason, solvedCount }, 'Form captcha watcher: solved');
         }
       } catch (error) {
@@ -1677,29 +1977,63 @@ export function attachFormCaptchaWatcher(
       return;
     }
 
-    void detectLiveCaptchaConfig(page).then((live) => {
+    void (async () => {
+      if (await alreadyReady()) {
+        return;
+      }
+      // Do not restart RuCaptcha loops on a lingering slider/image shell.
+      if (solvedCount > 0) {
+        return;
+      }
+      const live = await detectLiveCaptchaConfig(page).catch(() => null);
       if (live) {
         runSolve('poll');
       }
-    }).catch(() => undefined);
+    })();
   }, 900);
 
   return {
-    async drain(): Promise<boolean> {
-      if (activeSolve) {
-        await activeSolve.catch(() => undefined);
-      }
-
-      const live = await detectLiveCaptchaConfig(page);
-
-      if (live || normalizeCaptchaType(baseConfig.captcha_type) !== 'none') {
-        runSolve('drain');
-        if (activeSolve) {
-          await activeSolve.catch(() => undefined);
+    async drain(waitForAppearMs = 0): Promise<boolean> {
+      // Mapped captcha=none and no live widget → do not burn 3–15s idle loops before submit.
+      if (normalizeCaptchaType(baseConfig.captcha_type) === 'none') {
+        const liveQuick = await detectLiveCaptchaConfig(page).catch(() => null);
+        if (!liveQuick) {
+          return false;
         }
       }
 
-      return solvedCount > 0;
+      const deadline = Date.now() + Math.max(0, waitForAppearMs);
+
+      do {
+        if (activeSolve) {
+          await activeSolve.catch(() => undefined);
+        }
+
+        if ((await alreadyReady()) || solvedCount > 0) {
+          return true;
+        }
+
+        const live = await detectLiveCaptchaConfig(page);
+
+        if (live || normalizeCaptchaType(baseConfig.captcha_type) !== 'none') {
+          runSolve('drain');
+          if (activeSolve) {
+            await activeSolve.catch(() => undefined);
+          }
+
+          if ((await alreadyReady()) || solvedCount > 0) {
+            return true;
+          }
+        }
+
+        if (Date.now() >= deadline) {
+          break;
+        }
+
+        await page.waitForTimeout(350);
+      } while (Date.now() < deadline);
+
+      return solvedCount > 0 || await alreadyReady();
     },
     stop(): void {
       stopped = true;

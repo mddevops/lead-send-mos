@@ -200,6 +200,11 @@ class ProjectSettings extends Page implements HasForms
                             ->label('Telegram chat_id для алертов')
                             ->helperText('Обязательно: нет proxy, сбой ruCaptcha, старт/финиш автопайплайна (успех и ошибка)')
                             ->columnSpan(2),
+                        TextInput::make('sync_remote_url')
+                            ->label('URL удалённого сервера (sync)')
+                            ->placeholder('https://meterorix.com')
+                            ->helperText('Куда отправлять сайты / прокси / автопайплайн по API. Токен берётся из локального BOT_API_TOKEN (тот же, что на сервере).')
+                            ->columnSpan(2),
                     ]),
             ]);
     }

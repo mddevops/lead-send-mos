@@ -8,17 +8,25 @@ use App\Models\Campaign;
 use App\Models\CampaignSiteRun;
 use App\Models\ProjectSetting;
 use App\Models\Site;
+use App\Services\DailyPipelineService;
 use App\Services\LeadIdentityGenerator;
+use App\Support\DataSyncFilamentActions;
 use App\Support\ProxyPicker;
 use App\Support\SubmitLeadPayloadBuilder;
 use Filament\Actions\Action;
+use Filament\Actions\BulkAction;
 use Filament\Actions\BulkActionGroup;
 use Filament\Actions\DeleteBulkAction;
 use Filament\Actions\EditAction;
+use Filament\Forms\Components\DateTimePicker;
+use Filament\Forms\Components\Radio;
 use Filament\Notifications\Notification;
+use Filament\Tables\Columns\IconColumn;
 use Filament\Tables\Columns\TextColumn;
 use Filament\Tables\Filters\SelectFilter;
+use Filament\Tables\Filters\TernaryFilter;
 use Filament\Tables\Table;
+use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Support\Facades\Auth;
 use Throwable;
 
@@ -43,6 +51,14 @@ class SitesTable
                     ->tooltip(fn (?string $state): ?string => $state)
                     ->toggleable(isToggledHiddenByDefault: true)
                     ->wrap(),
+                IconColumn::make('is_promo')
+                    ->label('Промо')
+                    ->boolean()
+                    ->trueIcon('heroicon-o-megaphone')
+                    ->falseIcon('heroicon-o-document-text')
+                    ->trueColor('warning')
+                    ->falseColor('gray')
+                    ->sortable(),
                 TextColumn::make('address')
                     ->label('Адрес')
                     ->searchable()
@@ -109,6 +125,11 @@ class SitesTable
                     ->relationship('region', 'name')
                     ->searchable()
                     ->preload(),
+                TernaryFilter::make('is_promo')
+                    ->label('Промо')
+                    ->trueLabel('Только промо')
+                    ->falseLabel('Только органика')
+                    ->placeholder('Все'),
             ])
             ->recordActions([
                 Action::make('scan_form')
@@ -307,6 +328,87 @@ class SitesTable
             ])
             ->toolbarActions([
                 BulkActionGroup::make([
+                    BulkAction::make('create_pipeline')
+                        ->label('Автопайплайн')
+                        ->icon('heroicon-o-queue-list')
+                        ->color('primary')
+                        ->deselectRecordsAfterCompletion()
+                        ->modalHeading('Создать автопайплайн из выбранных сайтов')
+                        ->modalDescription('Без выбора региона — у сайтов он уже есть. Можно смешивать регионы.')
+                        ->modalSubmitActionLabel('Создать')
+                        ->form([
+                            Radio::make('mode')
+                                ->label('Режим')
+                                ->options([
+                                    'scan_only' => 'Только сканировать формы',
+                                    'submit_only' => 'Только отправить формы',
+                                    'scan_and_submit' => 'Сканировать и отправить формы',
+                                ])
+                                ->default('scan_and_submit')
+                                ->required(),
+                            Radio::make('when')
+                                ->label('Когда запустить')
+                                ->options([
+                                    'now' => 'Сейчас',
+                                    'schedule' => 'По расписанию',
+                                ])
+                                ->default('now')
+                                ->live()
+                                ->required(),
+                            DateTimePicker::make('scheduled_start_at')
+                                ->label('Старт')
+                                ->seconds(false)
+                                ->native(false)
+                                ->required(fn (callable $get): bool => $get('when') === 'schedule')
+                                ->visible(fn (callable $get): bool => $get('when') === 'schedule'),
+                            DateTimePicker::make('deadline_at')
+                                ->label('Стоп (дедлайн)')
+                                ->seconds(false)
+                                ->native(false)
+                                ->required(fn (callable $get): bool => $get('when') === 'schedule')
+                                ->visible(fn (callable $get): bool => $get('when') === 'schedule'),
+                            DateTimePicker::make('deadline_at_optional')
+                                ->label('Стоп (необязательно)')
+                                ->seconds(false)
+                                ->native(false)
+                                ->visible(fn (callable $get): bool => $get('when') === 'now')
+                                ->helperText('Пусто = до ручной остановки.'),
+                        ])
+                        ->action(function (Collection $records, array $data): void {
+                            $siteIds = $records->pluck('id')->map(fn ($id) => (int) $id)->filter()->values()->all();
+                            if ($siteIds === []) {
+                                Notification::make()->title('Нет сайтов')->warning()->send();
+
+                                return;
+                            }
+
+                            try {
+                                $when = (string) ($data['when'] ?? 'now');
+                                $run = app(DailyPipelineService::class)->createFromSites([
+                                    'mode' => (string) ($data['mode'] ?? 'scan_and_submit'),
+                                    'site_ids' => $siteIds,
+                                    'scheduled_start_at' => $when === 'schedule' ? ($data['scheduled_start_at'] ?? null) : null,
+                                    'deadline_at' => $when === 'schedule'
+                                        ? ($data['deadline_at'] ?? null)
+                                        : ($data['deadline_at_optional'] ?? null),
+                                ]);
+
+                                Notification::make()
+                                    ->title($run->status === 'pending'
+                                        ? "Автопайплайн #{$run->id} запланирован"
+                                        : "Автопайплайн #{$run->id} создан")
+                                    ->body($run->stageLabel().' · сайтов: '.count($siteIds))
+                                    ->success()
+                                    ->send();
+                            } catch (Throwable $e) {
+                                Notification::make()
+                                    ->title('Не удалось создать пайплайн')
+                                    ->body($e->getMessage())
+                                    ->danger()
+                                    ->send();
+                            }
+                        }),
+                    DataSyncFilamentActions::pushSelectedSitesBulkAction(),
                     DeleteBulkAction::make(),
                 ]),
             ]);

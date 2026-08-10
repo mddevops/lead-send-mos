@@ -24,6 +24,8 @@ class Proxy extends Model
         'last_used_at',
         'cooldown_until',
         'last_ip',
+        'last_checked_at',
+        'last_check_error',
         'notes',
     ];
 
@@ -36,6 +38,7 @@ class Proxy extends Model
         return [
             'last_used_at' => 'datetime',
             'cooldown_until' => 'datetime',
+            'last_checked_at' => 'datetime',
         ];
     }
 

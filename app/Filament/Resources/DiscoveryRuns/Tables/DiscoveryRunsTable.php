@@ -26,6 +26,13 @@ class DiscoveryRunsTable
                     ->label('Запрос')
                     ->limit(40)
                     ->toggleable(),
+                IconColumn::make('only_promo')
+                    ->label('Только промо')
+                    ->boolean()
+                    ->trueIcon('heroicon-o-check-badge')
+                    ->falseIcon('heroicon-o-queue-list')
+                    ->trueColor('warning')
+                    ->falseColor('gray'),
                 TextColumn::make('status')
                     ->label('Статус')
                     ->badge()

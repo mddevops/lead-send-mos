@@ -100,6 +100,8 @@ class ProxyHealthChecker
                     'status' => 'active',
                     'last_ip' => $result['ip'],
                     'cooldown_until' => null,
+                    'last_checked_at' => now(),
+                    'last_check_error' => null,
                 ])->save();
 
                 $working[] = [
@@ -115,6 +117,8 @@ class ProxyHealthChecker
             $proxy->forceFill([
                 'status' => 'disabled',
                 'cooldown_until' => null,
+                'last_checked_at' => now(),
+                'last_check_error' => $result['error'] ?? 'нет ответа',
             ])->save();
 
             $disabled += 1;
@@ -131,7 +135,31 @@ class ProxyHealthChecker
             'working' => $working,
             'failed' => $failed,
             'disabled' => $disabled,
+            'has_active' => $working !== [],
         ];
+    }
+
+    /**
+     * Proxies to re-check on the 10-minute health cron (and manual full check).
+     * Skips cooldown until cooldown_until passes.
+     *
+     * @return \Illuminate\Database\Eloquent\Collection<int, Proxy>
+     */
+    public function proxiesForScheduledCheck()
+    {
+        return Proxy::query()
+            ->where(function ($q): void {
+                $q->whereIn('status', ['active', 'disabled', 'failed'])
+                    ->orWhere(function ($q2): void {
+                        $q2->where('status', 'cooldown')
+                            ->where(function ($q3): void {
+                                $q3->whereNull('cooldown_until')
+                                    ->orWhere('cooldown_until', '<=', now());
+                            });
+                    });
+            })
+            ->orderBy('id')
+            ->get();
     }
 
     private function buildProxyUrl(Proxy $proxy): string

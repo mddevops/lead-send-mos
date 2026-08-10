@@ -20,12 +20,7 @@ class LeadIdentityGenerator
         [$firstName, $middleName, $lastName] = $this->pickNameParts($gender);
         $phoneMeta = $this->generatePhoneForRegion($site->region);
 
-        // Иногда ФИО с отчеством, иногда только имя + фамилия.
-        $includeMiddleName = random_int(0, 1) === 1;
-        $usedMiddleName = $includeMiddleName ? $middleName : '';
-        $name = $includeMiddleName
-            ? trim("{$firstName} {$middleName} {$lastName}")
-            : trim("{$firstName} {$lastName}");
+        [$name, $usedMiddleName] = $this->composeDisplayName($firstName, $middleName, $lastName);
 
         return [
             'name' => $name,
@@ -37,6 +32,38 @@ class LeadIdentityGenerator
             'region' => $site->region?->name,
             'operator' => $phoneMeta['operator'],
         ];
+    }
+
+    /**
+     * Случайный формат заполнения поля «Имя»:
+     * только имя / имя+фамилия / фамилия+имя / имя+отчество / фамилия+имя+отчество.
+     *
+     * @return array{0: string, 1: string} [displayName, usedMiddleName]
+     */
+    public function composeDisplayName(string $firstName, string $middleName, string $lastName): array
+    {
+        $formats = [
+            'first',
+            'first_last',
+            'last_first',
+            'first_middle',
+            'last_first_middle',
+        ];
+        $format = $formats[array_rand($formats)];
+
+        $name = match ($format) {
+            'first' => $firstName,
+            'first_last' => trim("{$firstName} {$lastName}"),
+            'last_first' => trim("{$lastName} {$firstName}"),
+            'first_middle' => trim("{$firstName} {$middleName}"),
+            'last_first_middle' => trim("{$lastName} {$firstName} {$middleName}"),
+        };
+
+        $usedMiddleName = in_array($format, ['first_middle', 'last_first_middle'], true)
+            ? $middleName
+            : '';
+
+        return [$name, $usedMiddleName];
     }
 
     /**

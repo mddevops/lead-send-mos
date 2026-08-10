@@ -3,6 +3,7 @@ import {
   CALLBACK_ENTRY_PATTERN,
   ENTRY_POINT_TEXT_PATTERN,
   HASH_WIDGET_HREF_PATTERN,
+  isLeadPhoneSelector,
   MIN_FORM_SCORE,
   MODAL_CONTAINER_SELECTORS,
   SERVICE_ENTRY_PATTERN,
@@ -11,6 +12,8 @@ import {
 import { closeOpenModal, OPEN_MODAL_SHELL_SELECTOR, resolveOpenModalShell } from './formInteractions';
 import { MAX_MODAL_TRIGGERS_PER_PAGE } from './formScanUtils';
 import type { DetectedFormMapping } from './formScanner';
+import { getCollectFormsInDocument } from './browserEvaluate';
+import { advanceQuizUntilForm, pageHasLeadPhone, pageLooksLikeQuiz, waitForLeadPhone } from './quizAdvance';
 
 type EntryPoint = {
   selector: string;
@@ -149,11 +152,6 @@ const ENTRY_POINT_EVALUATOR = `(() => {
   return results.sort((left, right) => right.priority - left.priority);
 })()`;
 
-function isLeadPhoneSelector(selector: string): boolean {
-  return /data-type=["']?PHONE|type=["']?tel|inputmode=["']?tel|#phone\b|name=["'][^"']*phone|name=["']tel|phone_num|телефон|placeholder.*тел|\+7/i.test(selector)
-    && !/#vin\b|#year\b|#email\b|name=["'][^"']*(vin|year|email)/i.test(selector);
-}
-
 function isLeadQualityForm(form: DetectedFormMapping): boolean {
   return form.confidence >= MIN_FORM_SCORE && isLeadPhoneSelector(form.phone_selector);
 }
@@ -195,7 +193,8 @@ function toDetectedForm(
     return null;
   }
 
-  if (!isLeadPhoneSelector(raw.phoneSelector) && raw.score < 80) {
+  // Never persist a name field as phone — even with a high score.
+  if (!isLeadPhoneSelector(raw.phoneSelector)) {
     return null;
   }
 
@@ -212,6 +211,180 @@ function toDetectedForm(
     confidence: raw.score,
     fingerprint: `${sourceUrl}|modal:${openModalSelector ?? 'inline'}|iframe:${iframeSelector ?? 'main'}|${raw.fingerprint}`,
   };
+}
+
+export async function discoverFormsViaQuiz(
+  page: Page,
+  sourceUrl: string,
+): Promise<{
+  forms: DetectedFormMapping[];
+  steps: number;
+  reachedForm: boolean;
+}> {
+  // If a lead phone is already visible without advancing, leave it to the normal form scan.
+  if (await pageHasLeadPhone(page)) {
+    return { forms: [], steps: 0, reachedForm: true };
+  }
+
+  if (!(await pageLooksLikeQuiz(page))) {
+    // Chat widgets often mount after hero/consent — wait patiently on first try.
+    await page.locator(
+      'button, [role="button"], label, .card.cursor-pointer, [class*="cursor-pointer"], .chat-bubble, [class*="quiz" i]',
+    ).first()
+      .waitFor({ state: 'visible', timeout: 10000 })
+      .catch(() => undefined);
+    await page.waitForTimeout(1500);
+    if (!(await pageLooksLikeQuiz(page))) {
+      return { forms: [], steps: 0, reachedForm: false };
+    }
+  }
+
+  const advance = await advanceQuizUntilForm(page, {
+    maxSteps: 20,
+    timeoutMs: 120_000,
+    openEntry: true,
+    paceMs: 1400,
+    randomChoice: true,
+  });
+
+  let reachedForm = advance.reachedForm;
+  if (!reachedForm) {
+    // Phone prompt may have appeared without the input mounting yet.
+    if (await waitForLeadPhone(page, 12000)) {
+      reachedForm = true;
+    } else {
+      return { forms: [], steps: advance.steps, reachedForm: false };
+    }
+  }
+
+  // Form fields often mount a few seconds after the "leave your phone" bubble.
+  await waitForLeadPhone(page, 12000);
+  await page.waitForTimeout(800);
+
+  const collector = getCollectFormsInDocument();
+  let forms: DetectedFormMapping[] = [];
+
+  try {
+    const raw = await page.evaluate(collector) as {
+      forms: Array<{
+        formScopeSelector: string | null;
+        nameSelector: string | null;
+        phoneSelector: string;
+        submitSelector: string;
+        consentCheckboxSelectors: string[];
+        fingerprint: string;
+        score: number;
+      }>;
+    };
+
+    for (const form of raw.forms ?? []) {
+      const mapped = toDetectedForm(
+        {
+          formScopeSelector: form.formScopeSelector,
+          nameSelector: form.nameSelector,
+          phoneSelector: form.phoneSelector,
+          submitSelector: form.submitSelector,
+          consentCheckboxSelectors: form.consentCheckboxSelectors ?? [],
+          fingerprint: form.fingerprint,
+          score: form.score,
+        },
+        sourceUrl,
+        advance.openModalSelector,
+        null,
+      );
+      if (!mapped) {
+        continue;
+      }
+
+      forms.push({
+        ...mapped,
+        pre_form_strategy: 'quiz_auto',
+        quiz_container_selector: advance.quizContainerSelector,
+        pre_form_click_selectors: advance.clickSelectors.length > 0 ? advance.clickSelectors : null,
+        fingerprint: `${mapped.fingerprint}|quiz_auto`,
+        confidence: Math.max(mapped.confidence, 80),
+      });
+    }
+  } catch {
+    forms = [];
+  }
+
+  // Fallback: build a mapping from visible tel/name/submit near the chat if collector missed it.
+  if (forms.length === 0 && await pageHasLeadPhone(page)) {
+    const fallback = await page.evaluate(`(() => {
+      const cssEscape = (value) => {
+        if (window.CSS && typeof CSS.escape === 'function') return CSS.escape(value);
+        return String(value).replace(/([ !"#$%&'()*+,./:;<=>?@[\\\\\\]^\`{|}~])/g, '\\\\$1');
+      };
+      const pickSelector = (el) => {
+        if (!el) return null;
+        if (el.id && /^[a-zA-Z][\\w-]*$/.test(el.id) && document.querySelectorAll('#' + cssEscape(el.id)).length === 1) {
+          return '#' + cssEscape(el.id);
+        }
+        if (el.name) {
+          const tag = el.tagName.toLowerCase();
+          const candidate = tag + '[name="' + String(el.name).replace(/"/g, '\\\\"') + '"]';
+          if (document.querySelectorAll(candidate).length === 1) return candidate;
+        }
+        const cls = Array.from(el.classList || []).filter(Boolean).slice(0, 2);
+        if (cls.length) {
+          const candidate = el.tagName.toLowerCase() + '.' + cls.map(cssEscape).join('.');
+          if (document.querySelectorAll(candidate).length <= 3) return candidate;
+        }
+        return el.tagName.toLowerCase();
+      };
+
+      const phone = document.querySelector('input[type="tel"], input[name*="phone" i], input[name="tel"], input[data-type="PHONE"]');
+      if (!phone) return null;
+      const root = phone.closest('form, .chat-bubble, .chat, [class*="form"], body') || document.body;
+      const name = root.querySelector('input[name*="name" i], input[placeholder*="имя" i], input[autocomplete="name"]');
+      const submit = root.querySelector('button[type="submit"], button.btn-primary, button.btn, input[type="submit"]');
+      const consents = Array.from(root.querySelectorAll('input[type="checkbox"]'))
+        .filter((el) => {
+          const t = ((el.labels && el.labels[0] && el.labels[0].textContent) || el.name || '').toLowerCase();
+          return /соглас|политик|персональн|compliance|privacy|обработк/.test(t) || el.name === 'compliance';
+        })
+        .map(pickSelector)
+        .filter(Boolean);
+
+      const phoneSel = pickSelector(phone);
+      const submitSel = pickSelector(submit);
+      if (!phoneSel || !submitSel) return null;
+      return {
+        formScopeSelector: pickSelector(root !== document.body ? root : phone.closest('div')) ,
+        nameSelector: pickSelector(name),
+        phoneSelector: phoneSel,
+        submitSelector: submitSel,
+        consentCheckboxSelectors: consents,
+        fingerprint: 'quiz-fallback|' + phoneSel + '|' + submitSel,
+        score: 85,
+      };
+    })()`).catch(() => null) as {
+      formScopeSelector: string | null;
+      nameSelector: string | null;
+      phoneSelector: string;
+      submitSelector: string;
+      consentCheckboxSelectors: string[];
+      fingerprint: string;
+      score: number;
+    } | null;
+
+    if (fallback) {
+      const mapped = toDetectedForm(fallback, sourceUrl, advance.openModalSelector, null);
+      if (mapped) {
+        forms.push({
+          ...mapped,
+          pre_form_strategy: 'quiz_auto',
+          quiz_container_selector: advance.quizContainerSelector,
+          pre_form_click_selectors: advance.clickSelectors.length > 0 ? advance.clickSelectors : null,
+          fingerprint: `${mapped.fingerprint}|quiz_auto`,
+          confidence: Math.max(mapped.confidence, 80),
+        });
+      }
+    }
+  }
+
+  return { forms, steps: advance.steps, reachedForm: true };
 }
 
 async function waitForModalDom(page: Page, entryHref: string | null): Promise<void> {
@@ -282,7 +455,7 @@ async function collectFormsFromOpenModal(
     const SCORE_SUBMIT = 30;
     const SCORE_CHECKBOXES = 10;
     const PHONE_PLACEHOLDER_RE =
-      /ваш\s+номер\s+телефона|номер\s+телефона|ваш\s+телефон|телефон\*?|\+7|8\s*\(|_{2,}|\(\s*_{2,}|\+\s*7/i;
+      /ваш\s+номер\s+телефона|номер\s+телефона|ваш\s+телефон|телефон\*?|phone|\+7(?:\s|\(|_)|8\s*\(\s*_|\+\s*7/i;
     const NAME_PLACEHOLDER_RE =
       /ваше\s+имя|введите\s+имя|^имя\*?$|(?:^|[\s:])имя(?:\s|\*|$)|\bимя\b|ф\.?\s*и\.?\s*о\.?|фио|fio|first\s*name|your\s+name|фамил|отчество/i;
     const SKIP_INPUT_TYPES = new Set(['hidden', 'submit', 'button', 'checkbox', 'radio', 'file', 'image', 'reset', 'password', 'email', 'number', 'range', 'date', 'color']);
@@ -327,12 +500,21 @@ async function collectFormsFromOpenModal(
     }
 
     function nearbyFieldLabel(input: HTMLElement): string {
-      const wrap = input.closest('.form__field, .form-field, .field, .input, .form-group, .UITextField, [class*="field"]')
-        ?? input.parentElement;
-      if (!wrap) {
-        return '';
+      const wrap = input.closest(
+        '.form__field, .form-field, .form-group, .UITextField, .t-input-group, .input-group, [class*="form__field"], [class*="FormField"]',
+      ) ?? input.parentElement;
+      if (!wrap || wrap === input.closest('form') || wrap === document.body) {
+        const parent = input.parentElement;
+        if (!parent || parent === input.closest('form')) {
+          return '';
+        }
+        return readLocalLabel(parent, input);
       }
 
+      return readLocalLabel(wrap, input);
+    }
+
+    function readLocalLabel(wrap: Element, input: HTMLElement): string {
       const labelEl = wrap.querySelector(
         'label, .label, .form__label, .placeholder, .placeholder-content, [class*="label"], [class*="placeholder"]',
       );
@@ -374,13 +556,11 @@ async function collectFormsFromOpenModal(
     }
 
     function isPhoneField(input: HTMLInputElement): boolean {
-      const context = inputContext(input);
+      const dataType = (input.getAttribute('data-type') || '').toUpperCase();
 
-      if (NON_LEAD_PHONE_RE.test(context)) {
+      if (dataType === 'NAME' || dataType === 'FIO' || dataType === 'EMAIL') {
         return false;
       }
-
-      const dataType = (input.getAttribute('data-type') || '').toUpperCase();
 
       if (dataType === 'PHONE' || dataType === 'TEL') {
         return true;
@@ -392,6 +572,18 @@ async function collectFormsFromOpenModal(
       const name = (input.getAttribute('name') || '').trim();
       const id = (input.id || '').trim();
       const placeholder = (input.getAttribute('placeholder') || '').trim();
+
+      if (NAME_PLACEHOLDER_RE.test(placeholder) || /(?:^|[_-])(name|fio|имя)(?:$|[_-])/i.test(name) || /(name|fio|firstname|first_name)$/i.test(id)) {
+        if (!PHONE_PLACEHOLDER_RE.test(placeholder) && type !== 'tel' && inputMode !== 'tel') {
+          return false;
+        }
+      }
+
+      const context = inputContext(input);
+
+      if (NON_LEAD_PHONE_RE.test(context)) {
+        return false;
+      }
 
       if (type === 'tel' || inputMode === 'tel' || autocomplete === 'tel' || autocomplete === 'tel-national') {
         return true;

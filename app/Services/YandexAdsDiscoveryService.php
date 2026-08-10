@@ -73,8 +73,13 @@ class YandexAdsDiscoveryService
      *
      * @return array{run: DiscoveryRun, task: BotTask}
      */
-    public function queueRun(Region $region, int $maxPages = 3, bool $useProxy = true, ?string $queryTemplate = null): array
-    {
+    public function queueRun(
+        Region $region,
+        int $maxPages = 3,
+        bool $useProxy = true,
+        ?string $queryTemplate = null,
+        bool $onlyPromo = true,
+    ): array {
         $this->ensureDefaultExclusions();
 
         $proxy = ProxyPicker::pick();
@@ -89,6 +94,7 @@ class YandexAdsDiscoveryService
         $run = DiscoveryRun::query()->create([
             'region_id' => $region->id,
             'query' => $query,
+            'only_promo' => $onlyPromo,
             'run_date' => now()->toDateString(),
             'status' => 'queued',
         ]);
@@ -104,6 +110,7 @@ class YandexAdsDiscoveryService
                 'regionName' => $region->name,
                 'query' => $query,
                 'maxPages' => max(1, min(5, $maxPages)),
+                'onlyPromo' => $onlyPromo,
                 'proxy' => ProxyPicker::toPayload($proxy),
             ],
         ]);
@@ -122,7 +129,7 @@ class YandexAdsDiscoveryService
     }
 
     /**
-     * @param  list<array{url?: string, destination_url?: string|null, yandex_url?: string|null, title?: string|null, snippet?: string|null}>  $items
+     * @param  list<array{url?: string, destination_url?: string|null, yandex_url?: string|null, title?: string|null, snippet?: string|null, is_promo?: bool}>  $items
      * @return array{found: int, created: int, skipped_existing: int, skipped_excluded: int, created_ids: list<int>}
      */
     public function applyResults(
@@ -168,6 +175,10 @@ class YandexAdsDiscoveryService
                 $yandexUrl = null;
             }
 
+            $isPromo = array_key_exists('is_promo', $item)
+                ? (bool) $item['is_promo']
+                : true;
+
             // Clean origin only: https://example.ru — never Path breadcrumbs.
             $url = YandexMapsSiteImporter::normalizeUrl($rawUrl)
                 ?? YandexMapsSiteImporter::normalizeUrl($destinationUrl);
@@ -201,6 +212,7 @@ class YandexAdsDiscoveryService
                 'domain' => $domain,
                 'title' => $title,
                 'snippet' => $snippet,
+                'is_promo' => $isPromo,
             ];
 
             if ($this->isExcludedDomain($domain, $exclusionSet)) {
@@ -211,19 +223,23 @@ class YandexAdsDiscoveryService
 
             $existing = YandexMapsSiteImporter::findByDomain($url);
             if ($existing !== null) {
-                // Attach to this discovery run so pipeline + «Сайты» see all promo hits.
+                // Attach to this discovery run so pipeline + «Сайты» see all hits.
+                // Once seen as promo — stay promo.
                 $existing->update([
                     'discovery_run_id' => $run->id,
-                    'ad_url' => $adUrl,
+                    'ad_url' => $isPromo ? $adUrl : ($existing->ad_url ?: $adUrl),
                     'discovered_at' => $existing->discovered_at ?? now(),
                     'region_id' => $existing->region_id ?: $run->region_id,
+                    'is_promo' => $isPromo || (bool) $existing->is_promo,
                 ]);
                 $skippedExisting++;
 
                 continue;
             }
 
-            $notes = 'Найден в рекламе Яндекса: '.$run->query;
+            $notes = $isPromo
+                ? 'Найден в рекламе Яндекса: '.$run->query
+                : 'Найден в органической выдаче Яндекса: '.$run->query;
             if ($title !== null && $title !== '') {
                 $notes .= "\nЗаголовок: ".$title;
             }
@@ -234,7 +250,8 @@ class YandexAdsDiscoveryService
                 'url' => $url,
                 'ad_url' => $adUrl,
                 'status' => 'new',
-                'source' => 'yandex_ads',
+                'source' => $isPromo ? 'yandex_ads' : 'yandex_organic',
+                'is_promo' => $isPromo,
                 'discovered_at' => now(),
                 'discovery_run_id' => $run->id,
                 'notes' => $notes,

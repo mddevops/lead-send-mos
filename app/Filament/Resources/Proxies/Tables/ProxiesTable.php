@@ -3,6 +3,7 @@
 namespace App\Filament\Resources\Proxies\Tables;
 
 use App\Models\Proxy;
+use App\Support\DataSyncFilamentActions;
 use Filament\Actions\BulkAction;
 use Filament\Actions\BulkActionGroup;
 use Filament\Actions\DeleteBulkAction;
@@ -95,6 +96,7 @@ class ProxiesTable
             ])
             ->toolbarActions([
                 BulkActionGroup::make([
+                    DataSyncFilamentActions::pushSelectedProxiesBulkAction(),
                     BulkAction::make('activate')
                         ->label('Активировать')
                         ->icon('heroicon-o-check-circle')

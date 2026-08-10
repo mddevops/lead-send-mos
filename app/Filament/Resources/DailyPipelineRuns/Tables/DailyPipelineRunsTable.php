@@ -5,10 +5,12 @@ namespace App\Filament\Resources\DailyPipelineRuns\Tables;
 use App\Filament\Resources\DailyPipelineRuns\DailyPipelineRunResource;
 use App\Models\DailyPipelineRun;
 use App\Services\DailyPipelineService;
+use App\Support\DataSyncFilamentActions;
 use Filament\Actions\Action;
 use Filament\Actions\BulkAction;
 use Filament\Actions\BulkActionGroup;
 use Filament\Actions\ViewAction;
+use Filament\Forms\Components\Radio;
 use Filament\Notifications\Notification;
 use Filament\Tables\Columns\TextColumn;
 use Filament\Tables\Table;
@@ -23,8 +25,12 @@ class DailyPipelineRunsTable
             ->columns([
                 TextColumn::make('id')->label('ID')->sortable(),
                 TextColumn::make('run_date')->label('Дата')->date('d.m.Y')->sortable(),
-                TextColumn::make('region.name')->label('Регион'),
+                TextColumn::make('region.name')->label('Регион')->placeholder('несколько'),
                 TextColumn::make('query')->label('Запрос')->limit(36)->searchable(),
+                TextColumn::make('sites_count')
+                    ->label('Сайтов')
+                    ->state(fn (DailyPipelineRun $record): int => $record->sitesCount())
+                    ->alignRight(),
                 TextColumn::make('stage')
                     ->label('Этап')
                     ->state(fn (DailyPipelineRun $record): string => $record->stageLabel())
@@ -33,6 +39,7 @@ class DailyPipelineRunsTable
                         'discovering', 'pending' => 'info',
                         'scanning' => 'warning',
                         'submitting' => 'primary',
+                        'paused_no_proxy' => 'danger',
                         'completed' => 'success',
                         'cancelled', 'timeout' => 'gray',
                         'failed' => 'danger',
@@ -44,12 +51,13 @@ class DailyPipelineRunsTable
                     ->formatStateUsing(fn (DailyPipelineRun $record): string => $record->statusLabel())
                     ->color(fn (DailyPipelineRun $record): string => match ($record->status) {
                         'discovering', 'scanning', 'submitting', 'pending' => 'info',
+                        'paused_no_proxy' => 'warning',
                         'completed' => 'success',
                         'failed' => 'danger',
                         'cancelled', 'timeout' => 'gray',
                         default => 'gray',
                     }),
-                TextColumn::make('promo_sites_count')->label('Промо')->alignRight(),
+                TextColumn::make('promo_sites_count')->label('Промо')->alignRight()->toggleable(isToggledHiddenByDefault: true),
                 TextColumn::make('forms_found_count')->label('Формы')->alignRight(),
                 TextColumn::make('forms_not_found_count')->label('Без формы')->alignRight()->toggleable(),
                 TextColumn::make('submit_lap')
@@ -58,6 +66,11 @@ class DailyPipelineRunsTable
                     ->alignRight(),
                 TextColumn::make('submit_success_count')->label('OK')->alignRight(),
                 TextColumn::make('submit_failed_count')->label('Err')->alignRight(),
+                TextColumn::make('scheduled_start_at')
+                    ->label('План старт')
+                    ->dateTime('d.m H:i')
+                    ->placeholder('—')
+                    ->toggleable(),
                 TextColumn::make('deadline_at')
                     ->label('Дедлайн')
                     ->formatStateUsing(fn ($state, DailyPipelineRun $record): string => $record->deadline_at
@@ -70,20 +83,59 @@ class DailyPipelineRunsTable
             ->recordUrl(fn (DailyPipelineRun $record) => DailyPipelineRunResource::getUrl('view', ['record' => $record]))
             ->actions([
                 ViewAction::make(),
-                Action::make('resume_submit')
-                    ->label('Продолжить отправку')
+                Action::make('start')
+                    ->label('Запустить')
                     ->icon('heroicon-o-play')
                     ->color('success')
-                    ->requiresConfirmation()
+                    ->modalHeading('Запустить пайплайн')
+                    ->modalSubmitActionLabel('Запустить')
                     ->visible(fn (DailyPipelineRun $record): bool => ! $record->isActive()
-                        && $record->discovery_run_id !== null
-                        && in_array($record->status, ['failed', 'cancelled', 'timeout', 'completed'], true)
-                        && ($record->scan_finished_at !== null || $record->forms_found_count > 0))
+                        && ! $record->isPausedNoProxy()
+                        && app(DailyPipelineService::class)->siteIdsFor($record) !== [])
+                    ->form([
+                        Radio::make('mode')
+                            ->label('Режим')
+                            ->options([
+                                'submit_only' => 'Только отправка форм',
+                                'scan_only' => 'Только сканирование сайтов',
+                                'scan_and_submit' => 'Сканирование + отправка форм',
+                            ])
+                            ->default('submit_only')
+                            ->required(),
+                    ])
+                    ->action(function (DailyPipelineRun $record, array $data): void {
+                        try {
+                            $fresh = app(DailyPipelineService::class)->start(
+                                $record,
+                                (string) ($data['mode'] ?? 'submit_only'),
+                            );
+                            Notification::make()
+                                ->title("Пайплайн #{$fresh->id} запущен")
+                                ->body($fresh->stageLabel())
+                                ->success()
+                                ->send();
+                        } catch (\Throwable $e) {
+                            Notification::make()
+                                ->title('Не удалось запустить')
+                                ->body($e->getMessage())
+                                ->danger()
+                                ->send();
+                        }
+                    }),
+                Action::make('resume_proxy')
+                    ->label('Возобновить')
+                    ->icon('heroicon-o-arrow-path')
+                    ->color('warning')
+                    ->visible(fn (DailyPipelineRun $record): bool => $record->isPausedNoProxy())
                     ->action(function (DailyPipelineRun $record): void {
                         try {
-                            $fresh = app(DailyPipelineService::class)->resumeSubmit($record);
+                            $service = app(DailyPipelineService::class);
+                            $fresh = ($record->source ?? '') === 'sites'
+                                ? $service->beginSitesPipelineWork($record)
+                                : $service->start($record, 'scan_and_submit');
                             Notification::make()
-                                ->title("Отправка возобновлена (круг {$fresh->submit_cycle_current})")
+                                ->title("Пайплайн #{$fresh->id}")
+                                ->body($fresh->stageLabel())
                                 ->success()
                                 ->send();
                         } catch (\Throwable $e) {
@@ -99,7 +151,7 @@ class DailyPipelineRunsTable
                     ->icon('heroicon-o-stop')
                     ->color('danger')
                     ->requiresConfirmation()
-                    ->visible(fn (DailyPipelineRun $record): bool => $record->isActive())
+                    ->visible(fn (DailyPipelineRun $record): bool => $record->isStoppable())
                     ->action(function (DailyPipelineRun $record): void {
                         app(DailyPipelineService::class)->stop($record);
                         Notification::make()
@@ -110,6 +162,7 @@ class DailyPipelineRunsTable
             ])
             ->bulkActions([
                 BulkActionGroup::make([
+                    DataSyncFilamentActions::pushSelectedPipelinesBulkAction(),
                     BulkAction::make('stop_selected')
                         ->label('Остановить выбранные')
                         ->icon('heroicon-o-stop')

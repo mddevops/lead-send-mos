@@ -1,0 +1,293 @@
+:root {
+  color-scheme: light;
+  --bg: #f4f6f8;
+  --card: #fff;
+  --text: #172033;
+  --muted: #667085;
+  --line: #d8dee8;
+  --primary: #2f6fed;
+  --danger: #c0392b;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  width: 420px;
+  max-height: 600px;
+  overflow: auto;
+  font: 13px/1.4 "Segoe UI", system-ui, sans-serif;
+  color: var(--text);
+  background: var(--bg);
+}
+
+.header {
+  padding: 12px 14px 8px;
+  background: var(--card);
+  border-bottom: 1px solid var(--line);
+}
+
+h1 {
+  margin: 0;
+  font-size: 16px;
+}
+
+.sub {
+  margin: 2px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.toolbar,
+.footer {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 10px 14px;
+}
+
+.toolbar {
+  border-bottom: 1px solid var(--line);
+  background: var(--card);
+}
+
+.check-all {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  white-space: nowrap;
+}
+
+select,
+input {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 6px 8px;
+  font: inherit;
+}
+
+#bulkRegion {
+  flex: 1;
+}
+
+.sites {
+  padding: 10px 14px;
+  display: grid;
+  gap: 8px;
+}
+
+.site {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 10px;
+}
+
+.site-head {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+}
+
+.site-title {
+  font-weight: 600;
+  word-break: break-all;
+}
+
+.site-meta {
+  color: var(--muted);
+  font-size: 12px;
+  margin-top: 2px;
+}
+
+.forms {
+  margin-top: 8px;
+  display: grid;
+  gap: 6px;
+}
+
+.form-item {
+  background: #f8fafc;
+  border-radius: 8px;
+  padding: 6px 8px;
+  font-size: 11px;
+  color: #334;
+  word-break: break-word;
+}
+
+.pages-label {
+  display: block;
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.pages-input {
+  margin-top: 4px;
+  width: 100%;
+  min-height: 72px;
+  resize: vertical;
+  font: 11px/1.35 Consolas, "Courier New", monospace;
+}
+
+.pages-save {
+  margin-top: 6px;
+}
+
+.site-region {
+  margin-top: 8px;
+}
+
+.footer {
+  position: sticky;
+  bottom: 0;
+  background: var(--card);
+  border-top: 1px solid var(--line);
+  justify-content: space-between;
+}
+
+.btn,
+.btn-icon {
+  appearance: none;
+  border: 1px solid var(--line);
+  background: #fff;
+  border-radius: 8px;
+  padding: 7px 10px;
+  font: inherit;
+  cursor: pointer;
+}
+
+.btn-primary {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: #fff;
+}
+
+.btn-danger {
+  color: var(--danger);
+}
+
+.btn-icon {
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  font-size: 16px;
+}
+
+.send-wrap {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.send-dropdown {
+  position: relative;
+}
+
+.menu {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 6px);
+  min-width: 220px;
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  box-shadow: 0 10px 30px rgba(0,0,0,.12);
+  padding: 6px;
+  z-index: 20;
+}
+
+.menu.hidden { display: none; }
+
+.menu button {
+  width: 100%;
+  text-align: left;
+  border: 0;
+  background: transparent;
+  padding: 8px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+  font: inherit;
+}
+
+.menu button:hover {
+  background: #eef3ff;
+}
+
+.status {
+  margin: 0;
+  padding: 0 14px 12px;
+  color: var(--muted);
+  min-height: 18px;
+  white-space: pre-wrap;
+}
+
+dialog {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 0;
+  width: min(380px, 92vw);
+}
+
+.settings {
+  padding: 14px;
+  display: grid;
+  gap: 10px;
+}
+
+.settings h2 {
+  margin: 0;
+  font-size: 15px;
+}
+
+.settings fieldset {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 10px;
+  display: grid;
+  gap: 8px;
+}
+
+.settings label {
+  display: grid;
+  gap: 4px;
+  font-size: 12px;
+}
+
+.dest-list {
+  display: grid;
+  gap: 6px;
+}
+
+.dest-item {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  align-items: center;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px;
+  background: #fafbfc;
+}
+
+.dest-item small {
+  color: var(--muted);
+  display: block;
+}
+
+.row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.row.end {
+  justify-content: flex-end;
+}
+
+.empty {
+  color: var(--muted);
+  padding: 20px 8px;
+  text-align: center;
+}

@@ -27,7 +27,22 @@ export const SUCCESS_SCORE_MUTATION = 20;
 
 /** Phone field: type="tel" + placeholder like «Ваш номер телефона», +7 (___)… */
 export const PHONE_PLACEHOLDER_PATTERN =
-  /ваш\s+номер\s+телефона|номер\s+телефона|ваш\s+телефон|телефон\*?|phone|\+7|8\s*\(|_{2,}|\(\s*_{2,}|\+\s*7/i;
+  /ваш\s+номер\s+телефона|номер\s+телефона|ваш\s+телефон|телефон\*?|phone|\+7(?:\s|\(|_)|8\s*\(\s*_|\+\s*7/i;
+
+/** True when a CSS selector clearly targets a phone input (not name/email/vin). */
+export function isLeadPhoneSelector(selector: string): boolean {
+  if (!selector.trim()) {
+    return false;
+  }
+
+  if (/data-type=["']?NAME|data-type=["']?FIO|placeholder\s*\*=\s*["'][^"']*имя|placeholder\s*\*=\s*["'][^"']*Имя|#name\b|name=["']name["']/i.test(selector)
+    && !/data-type=["']?PHONE|type=["']?tel|phone|tel|телефон/i.test(selector)) {
+    return false;
+  }
+
+  return /data-type=["']?PHONE|type=["']?tel|inputmode=["']?tel|#phone\b|name=["'][^"']*phone|name=["']tel|phone_num|телефон|placeholder.*тел|\+7/i.test(selector)
+    && !/#vin\b|#year\b|#email\b|name=["'][^"']*(vin|year|email)/i.test(selector);
+}
 
 /** Name field: name="name" or placeholder «Имя», «Ф.И.О.»… */
 export const NAME_FIELD_PATTERN =

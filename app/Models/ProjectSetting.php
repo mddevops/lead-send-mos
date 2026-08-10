@@ -55,6 +55,7 @@ class ProjectSetting extends Model
         'captcha_solver_api_key',
         'telegram_bot_token',
         'telegram_webhook_secret',
+        'sync_remote_url',
     ];
 
     protected function casts(): array

@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Form Mapper</title>
+  <link rel="stylesheet" href="popup.css" />
+</head>
+<body>
+  <header class="header">
+    <div>
+      <h1>Form Mapper</h1>
+      <p class="sub">Alt+Space — захват · Alt+клик — обычный клик</p>
+    </div>
+  </header>
+
+  <section class="toolbar">
+    <label class="check-all">
+      <input type="checkbox" id="selectAll" />
+      Все
+    </label>
+    <select id="bulkRegion" title="Регион для выбранных">
+      <option value="">Регион…</option>
+    </select>
+    <button type="button" id="applyRegion" class="btn">Применить</button>
+  </section>
+
+  <section id="sites" class="sites"></section>
+
+  <section class="footer">
+    <button type="button" id="clearBtn" class="btn btn-danger">Очистить</button>
+
+    <div class="send-wrap">
+      <button type="button" id="settingsBtn" class="btn-icon" title="Настройки API">⚙</button>
+      <div class="send-dropdown">
+        <button type="button" id="sendBtn" class="btn btn-primary">Отправить по API ▾</button>
+        <div id="sendMenu" class="menu hidden"></div>
+      </div>
+    </div>
+  </section>
+
+  <p id="status" class="status"></p>
+
+  <dialog id="settingsDialog">
+    <form method="dialog" id="settingsForm" class="settings">
+      <h2>API destinations</h2>
+      <div id="destList" class="dest-list"></div>
+      <fieldset>
+        <legend>Добавить / изменить</legend>
+        <input type="hidden" id="destEditId" />
+        <label>Название <input id="destName" required placeholder="Local" /></label>
+        <label>Base URL <input id="destBaseUrl" required placeholder="http://127.0.0.1:8000" /></label>
+        <label>Token <input id="destToken" required placeholder="local-bot-token" /></label>
+        <div class="row">
+          <button type="button" id="destSave" class="btn btn-primary">Сохранить destination</button>
+          <button type="button" id="destLoadMeta" class="btn">Проверить / загрузить регионы</button>
+        </div>
+      </fieldset>
+      <div class="row end">
+        <button type="submit" class="btn">Закрыть</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script src="popup.js" type="module"></script>
+</body>
+</html>

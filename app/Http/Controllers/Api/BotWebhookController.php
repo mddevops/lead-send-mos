@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Models\BotTask;
 use App\Models\CampaignSiteRun;
+use App\Models\DailyPipelineRun;
 use App\Models\DiscoveryRun;
 use App\Models\FormMapping;
 use App\Models\ProjectSetting;
@@ -166,6 +167,10 @@ class BotWebhookController extends Controller
             ]);
         }
 
+        if (in_array($botTask->type, ['scan_form', 'discover_yandex_ads'], true)) {
+            $this->kickPipelineTick();
+        }
+
         return response()->json(['ok' => true]);
     }
 
@@ -217,6 +222,10 @@ class BotWebhookController extends Controller
                     $errorMessage !== '' ? $errorMessage : 'Ошибка задачи discovery',
                 );
             }
+        }
+
+        if (in_array($botTask->type, ['scan_form', 'discover_yandex_ads'], true)) {
+            $this->kickPipelineTick();
         }
 
         return response()->json(['ok' => true]);
@@ -272,6 +281,7 @@ class BotWebhookController extends Controller
         });
 
         $this->syncSiteStatusAfterScan($site, $createdMappings);
+        $this->kickPipelineTick();
 
         return response()->json([
             'ok' => true,
@@ -297,6 +307,14 @@ class BotWebhookController extends Controller
             'finished_at' => ['nullable', 'date'],
             'duration_ms' => ['nullable', 'integer', 'min:0'],
         ]);
+
+        // Metrika/beacon URLs and binary beacons blow VARCHAR/TEXT columns.
+        if (isset($data['response_url']) && is_string($data['response_url'])) {
+            $data['response_url'] = mb_substr($data['response_url'], 0, 191);
+        }
+        if (isset($data['response_text']) && is_string($data['response_text'])) {
+            $data['response_text'] = mb_substr($data['response_text'], 0, 5000);
+        }
 
         $run->update([
             ...$data,
@@ -335,6 +353,7 @@ class BotWebhookController extends Controller
                 ]);
 
                 $this->notifyTelegramIfNeeded($campaign);
+                $this->kickPipelineTick();
             } else {
                 $campaign->update([
                     'status' => 'processing',
@@ -398,6 +417,7 @@ class BotWebhookController extends Controller
             'items.*.title' => ['nullable', 'string'],
             'items.*.snippet' => ['nullable', 'string'],
             'items.*.yandex_url' => ['nullable', 'string'],
+            'items.*.is_promo' => ['nullable', 'boolean'],
             'pages_scanned' => ['nullable', 'integer', 'min:0'],
             'blocked' => ['nullable', 'boolean'],
             'error_message' => ['nullable', 'string', 'max:2000'],
@@ -413,6 +433,8 @@ class BotWebhookController extends Controller
                 : null,
         );
 
+        $this->kickPipelineTick();
+
         return response()->json([
             'ok' => true,
             ...$stats,
@@ -424,6 +446,24 @@ class BotWebhookController extends Controller
         abort_unless(ctype_digit($task), 404, 'Task not found.');
 
         return BotTask::query()->findOrFail((int) $task);
+    }
+
+    /**
+     * Advance autopipeline immediately after bot stage changes (don't wait only for cron).
+     */
+    private function kickPipelineTick(): void
+    {
+        try {
+            if (! DailyPipelineRun::query()
+                ->whereIn('status', ['pending', 'discovering', 'scanning', 'submitting'])
+                ->exists()) {
+                return;
+            }
+
+            app(DailyPipelineService::class)->tick();
+        } catch (\Throwable $e) {
+            Log::warning('pipeline.kick_failed', ['error' => $e->getMessage()]);
+        }
     }
 
     /**
@@ -439,6 +479,10 @@ class BotWebhookController extends Controller
             'message_selector' => ['nullable', 'string'],
             'submit_selector' => ['required', 'string'],
             'open_modal_selector' => ['nullable', 'string'],
+            'pre_form_click_selectors' => ['nullable', 'array'],
+            'pre_form_click_selectors.*' => ['string'],
+            'pre_form_strategy' => ['nullable', 'in:selectors,quiz_auto'],
+            'quiz_container_selector' => ['nullable', 'string'],
             'form_scope_selector' => ['nullable', 'string'],
             'consent_checkbox_selector' => ['nullable', 'string'],
             'consent_checkbox_selectors' => ['nullable', 'array'],
@@ -530,6 +574,17 @@ class BotWebhookController extends Controller
             'status' => $hasActive ? 'ready' : 'needs_manual_mapping',
             'last_scan_at' => now(),
         ]);
+
+        if ($hasActive) {
+            try {
+                app(DailyPipelineService::class)->refreshPipelinesContainingSite((int) $site->id);
+            } catch (\Throwable $e) {
+                Log::warning('pipeline.refresh_after_mapping_failed', [
+                    'site_id' => $site->id,
+                    'error' => $e->getMessage(),
+                ]);
+            }
+        }
     }
 
     private function syncProxyStateFromRun(CampaignSiteRun $run): void

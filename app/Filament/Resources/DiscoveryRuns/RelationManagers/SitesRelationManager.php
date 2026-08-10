@@ -5,15 +5,23 @@ namespace App\Filament\Resources\DiscoveryRuns\RelationManagers;
 use App\Filament\Resources\Sites\Pages\ManualSiteMapping;
 use App\Filament\Resources\Sites\SiteResource;
 use App\Models\BotTask;
+use App\Models\DiscoveryRun;
 use App\Models\ProjectSetting;
 use App\Models\Site;
 use App\Support\ProxyPicker;
+use App\Support\SitesExcelExport;
 use Filament\Actions\Action;
+use Filament\Actions\BulkAction;
+use Filament\Actions\BulkActionGroup;
 use Filament\Notifications\Notification;
 use Filament\Resources\RelationManagers\RelationManager;
+use Filament\Tables\Columns\IconColumn;
 use Filament\Tables\Columns\TextColumn;
 use Filament\Tables\Filters\SelectFilter;
+use Filament\Tables\Filters\TernaryFilter;
 use Filament\Tables\Table;
+use Illuminate\Database\Eloquent\Collection as EloquentCollection;
+use Symfony\Component\HttpFoundation\BinaryFileResponse;
 
 class SitesRelationManager extends RelationManager
 {
@@ -37,13 +45,22 @@ class SitesRelationManager extends RelationManager
                     ->label('URL')
                     ->searchable()
                     ->limit(40)
-                    ->tooltip(fn (Site $record): string => $record->url),
+                    ->tooltip(fn (Site $record): string => $record->url)
+                    ->copyable()
+                    ->copyMessage('URL скопирован'),
                 TextColumn::make('ad_url')
                     ->label('Рекламная ссылка')
                     ->limit(50)
                     ->tooltip(fn (?string $state): ?string => $state)
                     ->placeholder('—')
                     ->wrap(),
+                IconColumn::make('is_promo')
+                    ->label('Промо')
+                    ->boolean()
+                    ->trueIcon('heroicon-o-megaphone')
+                    ->falseIcon('heroicon-o-document-text')
+                    ->trueColor('warning')
+                    ->falseColor('gray'),
                 TextColumn::make('status')
                     ->label('Статус')
                     ->badge()
@@ -88,8 +105,54 @@ class SitesRelationManager extends RelationManager
                         'mapping_failed' => 'Ошибка маппинга',
                         'disabled' => 'Отключён',
                     ]),
+                TernaryFilter::make('is_promo')
+                    ->label('Промо')
+                    ->trueLabel('Только промо')
+                    ->falseLabel('Только органика')
+                    ->placeholder('Все'),
             ])
-            ->headerActions([])
+            ->headerActions([
+                Action::make('exportExcel')
+                    ->label('Экспорт в Excel')
+                    ->icon('heroicon-o-arrow-down-tray')
+                    ->color('success')
+                    ->action(function (): BinaryFileResponse {
+                        /** @var DiscoveryRun $run */
+                        $run = $this->getOwnerRecord();
+
+                        $sites = $run->sites()
+                            ->with('region')
+                            ->orderBy('id')
+                            ->get();
+
+                        return SitesExcelExport::downloadXlsx(
+                            $sites,
+                            'discovery-'.$run->id.'-sites',
+                        );
+                    }),
+            ])
+            ->toolbarActions([
+                BulkActionGroup::make([
+                    BulkAction::make('exportSelected')
+                        ->label('Экспорт выбранных')
+                        ->icon('heroicon-o-arrow-down-tray')
+                        ->action(function (EloquentCollection $records): BinaryFileResponse {
+                            /** @var DiscoveryRun $run */
+                            $run = $this->getOwnerRecord();
+
+                            $sites = $records
+                                ->loadMissing('region')
+                                ->sortBy('id')
+                                ->values();
+
+                            return SitesExcelExport::downloadXlsx(
+                                $sites,
+                                'discovery-'.$run->id.'-selected',
+                            );
+                        })
+                        ->deselectRecordsAfterCompletion(),
+                ]),
+            ])
             ->recordActions([
                 Action::make('scan_form')
                     ->label('Найти форму')

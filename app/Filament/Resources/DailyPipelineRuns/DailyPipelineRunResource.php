@@ -53,25 +53,31 @@ class DailyPipelineRunResource extends Resource
                         ->badge(),
                     TextEntry::make('run_date')->label('Дата')->date(),
                     TextEntry::make('region.name')->label('Регион'),
+                    TextEntry::make('sites_count')
+                        ->label('Сайтов')
+                        ->state(fn (DailyPipelineRun $record): int => $record->sitesCount()),
                     TextEntry::make('query')->label('Запрос')->columnSpanFull(),
                     TextEntry::make('max_pages')->label('Страниц выдачи'),
                     TextEntry::make('use_proxy')->label('Proxy')->badge(),
-                    TextEntry::make('start_time')->label('Старт (план)'),
-                    TextEntry::make('deadline_time')
+                    TextEntry::make('start_time')->label('Старт (план время)'),
+                    TextEntry::make('scheduled_start_at')->label('Старт (дата/время)')->dateTime('d.m.Y H:i')->placeholder('сразу'),
+                    TextEntry::make('deadline_at')
                         ->label('Дедлайн')
-                        ->formatStateUsing(fn (?string $state): string => $state ?: 'до ручной остановки'),
+                        ->dateTime('d.m.Y H:i')
+                        ->placeholder('до ручной остановки'),
                     TextEntry::make('timezone')->label('Часовой пояс'),
+                    TextEntry::make('pause_reason')->label('Причина паузы')->placeholder('—'),
                     TextEntry::make('submit_lap')
                         ->label('Круг отправки')
                         ->state(fn (DailyPipelineRun $record): string => (string) max(0, (int) $record->submit_cycle_current)
-                            .($record->deadline_at ? ' (до дедлайна '.$record->deadline_time.')' : ' (до остановки)')),
+                            .($record->deadline_at ? ' (до дедлайна)' : ' (до остановки)')),
                     TextEntry::make('error_message')->label('Ошибка')->columnSpanFull()->placeholder('—'),
                 ]),
             Section::make('Статистика по этапам')
                 ->columns(4)
                 ->schema([
                     TextEntry::make('promo_sites_count')->label('1) Промо сайтов'),
-                    TextEntry::make('new_sites_count')->label('1) Новых сайтов'),
+                    TextEntry::make('new_sites_count')->label('Сайтов в прогоне'),
                     TextEntry::make('scan_queued_count')->label('2) Скан форм (очередь)'),
                     TextEntry::make('forms_found_count')->label('2) Форм найдено'),
                     TextEntry::make('forms_not_found_count')->label('2) Без формы / ошибка'),

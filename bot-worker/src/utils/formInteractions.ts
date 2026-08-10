@@ -49,27 +49,63 @@ export async function scrollPageToRevealContent(page: Page): Promise<void> {
 }
 
 export async function dismissCommonOverlays(page: Page): Promise<void> {
-  // Prefer cookie-banner scoped controls — broad "согласен" matches Tilda lead-form
-  // consent links and can navigate away from the landing (empty DOM for the scanner).
-  const cookieButtons = [
-    page.locator('[class*="cookie" i], [id*="cookie" i], [class*="consent" i], .cookies, #cookies')
-      .locator('a, button, [role="button"]')
-      .filter({ hasText: /принять|согласен|хорошо|понятно|ok/i }),
-    page.getByRole('button', { name: /^принять$/i }),
-    page.getByRole('button', { name: /^я согласен$/i }),
-    page.getByRole('button', { name: /^хорошо$/i }),
-    page.getByRole('button', { name: /^понятно$/i }),
-    page.locator('a, button, [role="button"]').filter({ hasText: /^принять$/i }),
-    page.locator('a, button, [role="button"]').filter({ hasText: /^я согласен$/i }),
-    page.locator('a, button, [role="button"]').filter({ hasText: /^понятно$/i }),
-  ];
+  // ONLY real cookie-banner hosts. Broad [class*="cookie"] / "согласен" matches
+  // lead-form policy links and navigates away (jetour-marcar.ru → /cookies).
+  const cookieHosts = page.locator(
+    [
+      '[class*="cookie-banner" i]',
+      '[class*="cookie_banner" i]',
+      '[class*="cookies-banner" i]',
+      '[class*="cookie-notice" i]',
+      '[class*="cookie-consent" i]',
+      '[id*="cookie-banner" i]',
+      '[id*="cookies-banner" i]',
+      '#cookie-banner',
+      '#cookies-banner',
+      '#onetrust-banner-sdk',
+      '.cc-window',
+      '.cookie-notice',
+      '[aria-label*="cookie" i][role="dialog"]',
+    ].join(', '),
+  );
 
-  for (const button of cookieButtons) {
-    if ((await button.count()) > 0 && (await button.first().isVisible().catch(() => false))) {
-      await button.first().click({ timeout: 2000 }).catch(() => undefined);
-      await page.waitForTimeout(400);
-      break;
+  const candidates = cookieHosts.locator('button, [role="button"]').filter({
+    hasText: /принять|согласен|хорошо|понятно|ok|agree|accept|разреш/i,
+  });
+
+  const count = Math.min(await candidates.count(), 6);
+
+  for (let index = 0; index < count; index += 1) {
+    const target = candidates.nth(index);
+    if (!(await target.isVisible().catch(() => false))) {
+      continue;
     }
+
+    const meta = await target.evaluate((el) => {
+      const anchor = el.closest('a') || (el.tagName === 'A' ? el : null);
+      return {
+        tag: el.tagName.toLowerCase(),
+        href: anchor?.getAttribute('href') || '',
+        inForm: Boolean(el.closest('form')),
+        role: (el.getAttribute('role') || '').toLowerCase(),
+      };
+    }).catch(() => null);
+
+    if (!meta) {
+      continue;
+    }
+
+    // Never follow policy links / never touch lead-form consent.
+    if (meta.tag === 'a' || meta.inForm || meta.href) {
+      continue;
+    }
+    if (/cookie|privacy|policy|personal|соглас|политик|\//i.test(meta.href)) {
+      continue;
+    }
+
+    await target.click({ timeout: 2000 }).catch(() => undefined);
+    await page.waitForTimeout(400);
+    break;
   }
 }
 
@@ -149,6 +185,12 @@ export const OPEN_MODAL_SHELL_SELECTOR = [
   '.v-modal',
   '.v-modal.is-open',
   '.v-modal--open',
+  // PrimeVue / auto-razgon.ru: credit CTA opens .p-drawer (role=complementary, not dialog)
+  '.p-drawer.p-drawer-open',
+  '.p-drawer-open .p-drawer',
+  '.p-drawer.p-component',
+  '.p-drawer-content',
+  '[class*="p-drawer"][class*="p-drawer-open"]',
   // Tilda popups (moskvich / marcarlada promo pages)
   '.t-popup.t-popup_show',
   '.t-popup_show',
@@ -184,6 +226,9 @@ const LEAD_MODAL_FALLBACK_SELECTOR = [
   'dialog',
   '.popup',
   '.fancybox-content',
+  '.p-drawer',
+  '.p-drawer-content',
+  '[class*="p-drawer"]',
 ].join(', ');
 
 /**
@@ -308,22 +353,11 @@ export async function ensureActiveLeadFormRoot(
     && (await currentPhone.isEnabled().catch(() => true));
 
   // If current phone is covered / gone but a modal form exists — switch.
-  // Also switch when a second stacked modal appeared (promo over form).
-  const foregroundBox = await foreground.boundingBox().catch(() => null);
-  const currentBox = await currentRoot.boundingBox().catch(() => null);
-  const looksLikeNewOverlay = Boolean(
-    foregroundBox
-    && currentBox
-    && (
-      Math.abs(foregroundBox.x - currentBox.x) > 20
-      || Math.abs(foregroundBox.y - currentBox.y) > 20
-      || Math.abs(foregroundBox.width - currentBox.width) > 40
-    ),
-  );
-
-  if (!currentPhoneOk || looksLikeNewOverlay) {
+  // Do NOT switch just because another on-page block with "modal" in class has different bounds
+  // (inline lead forms on dealer SPAs often match [class*="modal"] falsely).
+  if (!currentPhoneOk) {
     logger.info(
-      { currentPhoneOk, looksLikeNewOverlay },
+      { currentPhoneOk },
       'Retargeted fill/submit to foreground lead modal',
     );
     return { formRoot: target, switchedToModal: true };
@@ -347,6 +381,7 @@ export async function resolveLeadFieldsInRoot(
   submit: Locator;
   usedPhoneFallback: boolean;
   usedSubmitFallback: boolean;
+  correctedRoles?: boolean;
 }> {
   const nameSelector = (mapping.name_selector ?? '').trim();
   const mappedPhone = fieldLocator(page, mapping, formRoot, mapping.phone_selector);
@@ -388,13 +423,148 @@ export async function resolveLeadFieldsInRoot(
   const submitVisible = (await mappedSubmit.count()) > 0
     && (await mappedSubmit.filter({ visible: true }).first().isVisible().catch(() => false));
 
+  let name = mappedName;
+  let phone = phoneVisible ? mappedPhone : phoneFallback;
+  const corrected = await correctSwappedNamePhoneFields(formRoot, name, phone);
+  name = corrected.name;
+  phone = corrected.phone;
+
   return {
-    name: mappedName,
-    phone: phoneVisible ? mappedPhone : phoneFallback,
+    name,
+    phone,
     submit: submitVisible ? mappedSubmit : submitFallback,
-    usedPhoneFallback: !phoneVisible,
+    usedPhoneFallback: !phoneVisible || corrected.corrected,
     usedSubmitFallback: !submitVisible,
+    correctedRoles: corrected.corrected,
   };
+}
+
+/**
+ * Classify a visible input as name / phone / other using its own attributes
+ * (not parent form text — that caused name fields to be saved as phone).
+ */
+export async function classifyLeadInputRole(locator: Locator): Promise<'name' | 'phone' | 'other'> {
+  const count = await locator.count().catch(() => 0);
+  if (count === 0) {
+    return 'other';
+  }
+
+  return locator.filter({ visible: true }).first().evaluate((el) => {
+    const input = el as HTMLInputElement;
+    const dataType = (input.getAttribute('data-type') || '').toUpperCase();
+    if (dataType === 'PHONE' || dataType === 'TEL') {
+      return 'phone';
+    }
+    if (dataType === 'NAME' || dataType === 'FIO') {
+      return 'name';
+    }
+
+    const type = (input.getAttribute('type') || 'text').toLowerCase();
+    const inputMode = (input.getAttribute('inputmode') || '').toLowerCase();
+    const autocomplete = (input.getAttribute('autocomplete') || '').toLowerCase();
+    if (type === 'tel' || inputMode === 'tel' || autocomplete === 'tel' || autocomplete === 'tel-national') {
+      return 'phone';
+    }
+
+    const blob = [
+      input.getAttribute('name') || '',
+      input.id || '',
+      input.getAttribute('placeholder') || '',
+      input.getAttribute('aria-label') || '',
+      typeof input.className === 'string' ? input.className : '',
+    ].join(' ');
+
+    const looksPhone = /phone|tel|telefon|телефон|\+7/i.test(blob);
+    const looksName = /(?:^|[\s_-])(name|fio|имя|фио)(?:$|[\s_-])|ваше\s+имя|your\s+name/i.test(blob);
+
+    if (looksName && !looksPhone) {
+      return 'name';
+    }
+    if (looksPhone && !looksName) {
+      return 'phone';
+    }
+
+    return 'other';
+  }).catch(() => 'other' as const);
+}
+
+/**
+ * If mapping put the name field into phone_selector (common scanner bug),
+ * retarget locators so fill writes name→name and phone→phone.
+ */
+export async function correctSwappedNamePhoneFields(
+  formRoot: Locator,
+  nameLocator: Locator,
+  phoneLocator: Locator,
+): Promise<{ name: Locator; phone: Locator; corrected: boolean }> {
+  const phoneRole = await classifyLeadInputRole(phoneLocator);
+  const nameRole = await classifyLeadInputRole(nameLocator);
+
+  const realPhone = formRoot.locator(
+    [
+      'input[data-type="PHONE"]',
+      'input[data-type="TEL"]',
+      'input.phone-input',
+      'input[type="tel"]',
+      'input[inputmode="tel"]',
+      'input[name="tel"]',
+      'input[name*="phone" i]',
+      '#phone',
+      'input[placeholder*="+7"]',
+      'input[placeholder*="телефон" i]',
+      'input[placeholder*="Телефон"]',
+    ].join(', '),
+  ).filter({ visible: true });
+
+  const realName = formRoot.locator(
+    [
+      'input[data-type="NAME"]',
+      'input[data-type="FIO"]',
+      'input.name-input',
+      'input[name="name"]',
+      'input[name*="name" i]',
+      'input[placeholder*="имя" i]',
+      'input[placeholder*="Имя"]',
+      'input[placeholder*="ФИО" i]',
+    ].join(', '),
+  ).filter({ visible: true });
+
+  // Classic swap: phone selector → name field, name selector → phone field.
+  if (phoneRole === 'name' && nameRole === 'phone') {
+    logger.warn('Corrected swapped name/phone selectors (classic swap)');
+    return { name: phoneLocator, phone: nameLocator, corrected: true };
+  }
+
+  // phone_selector points at name field; name was empty / missing.
+  if (phoneRole === 'name') {
+    const hasRealPhone = (await realPhone.count()) > 0
+      && (await realPhone.first().isVisible().catch(() => false));
+    if (hasRealPhone) {
+      // Prefer an already-correct name locator; otherwise the mislabeled phone selector is the name field.
+      const nameTarget = nameRole === 'name' ? nameLocator : phoneLocator;
+      logger.warn(
+        { phoneRole, nameRole },
+        'phone_selector pointed at name field — retargeted to real phone',
+      );
+      return { name: nameTarget, phone: realPhone, corrected: true };
+    }
+  }
+
+  // name_selector points at phone; try to recover name field.
+  if (nameRole === 'phone' && phoneRole !== 'phone') {
+    const hasRealName = (await realName.count()) > 0
+      && (await realName.first().isVisible().catch(() => false));
+    if (hasRealName) {
+      logger.warn('name_selector pointed at phone field — retargeted');
+      return {
+        name: realName,
+        phone: phoneRole === 'name' || phoneRole === 'other' ? realPhone : phoneLocator,
+        corrected: true,
+      };
+    }
+  }
+
+  return { name: nameLocator, phone: phoneLocator, corrected: false };
 }
 
 /**
@@ -487,14 +657,14 @@ export async function openFormModal(page: Page, openSelector: string): Promise<v
     await clickVisible(trigger);
   });
 
-  // Carmir / AutoPlaza: modal shell toggles display:block shortly after CTA.
+  // Carmir / AutoPlaza / PrimeVue drawer: shell toggles shortly after CTA.
   await Promise.race([
-    page.locator('.modal__wrapper, .modal__content, .modal.show, .base-dialog, [role="dialog"]')
+    page.locator('.modal__wrapper, .modal__content, .modal.show, .base-dialog, [role="dialog"], .p-drawer, .p-drawer-content')
       .filter({ visible: true })
       .first()
       .waitFor({ state: 'visible', timeout: 12000 }),
     page.locator(
-      '.modal__wrapper input[type="tel"], .modal__content input[type="tel"], [role="dialog"] input[type="tel"]',
+      '.modal__wrapper input[type="tel"], .modal__content input[type="tel"], [role="dialog"] input[type="tel"], .p-drawer input[type="tel"], .p-drawer-content input[type="tel"]',
     )
       .filter({ visible: true })
       .first()
@@ -610,12 +780,47 @@ export function fieldLocator(page: Page, mapping: MappingScope, formRoot: Locato
   return formRoot.locator(relativeSelector);
 }
 
+/**
+ * Manual mapping often saves the wrapper (.base-input / .form-group) instead of <input>.
+ * Resolve to a real editable control before fill / phone verify / submit guards.
+ */
+export async function resolveEditableInput(locator: Locator): Promise<Locator> {
+  const root = locator.first();
+  const count = await root.count().catch(() => 0);
+  if (count < 1) {
+    return root;
+  }
+
+  const tag = await root.evaluate((el) => el.tagName.toLowerCase()).catch(() => '');
+  if (tag === 'input' || tag === 'textarea' || tag === 'select') {
+    return root;
+  }
+
+  const nestedVisible = root.locator(
+    'input:not([type="hidden"]):not([type="checkbox"]):not([type="radio"]):not([type="submit"]):not([type="button"]), textarea, [contenteditable="true"]',
+  ).filter({ visible: true }).first();
+
+  if ((await nestedVisible.count().catch(() => 0)) > 0) {
+    return nestedVisible;
+  }
+
+  const nestedAny = root.locator(
+    'input:not([type="hidden"]):not([type="checkbox"]):not([type="radio"]):not([type="submit"]):not([type="button"]), textarea',
+  ).first();
+
+  if ((await nestedAny.count().catch(() => 0)) > 0) {
+    return nestedAny;
+  }
+
+  return root;
+}
+
 export async function fillField(
   locator: Locator,
   value: string,
   behavior: FillBehaviorId = 'typo_backspace',
 ): Promise<void> {
-  const input = locator.filter({ visible: true }).first();
+  const input = (await resolveEditableInput(locator)).filter({ visible: true }).first();
   await input.waitFor({ state: 'visible', timeout: 20000 });
   await prepareFieldForTyping(input);
 
@@ -637,10 +842,17 @@ export async function fillField(
 
   const typedValue = isMaskedPhone
     ? normalizePhoneDigits(value)
-    : value;
+    : await fitTextToInputLimit(input, value);
 
   // Masked phones break on backspace/typo patterns — use safer typing.
   const effectiveBehavior = isMaskedPhone ? pickPhoneSafeBehavior(behavior) : behavior;
+
+  if (!isMaskedPhone && typedValue !== value) {
+    logger.info(
+      { originalLength: value.length, truncatedLength: typedValue.length },
+      'Truncated text to input maxlength before typing',
+    );
+  }
 
   logger.info(
     { behavior: effectiveBehavior, requestedBehavior: behavior, isPhone: isMaskedPhone, length: typedValue.length },
@@ -671,6 +883,86 @@ function pickPhoneSafeBehavior(behavior: FillBehaviorId): FillBehaviorId {
 
   const safe: FillBehaviorId[] = ['slow_careful', 'chunk_pause', 'hesitate_mid', 'two_speed', 'fast_burst'];
   return safe[Math.floor(Math.random() * safe.length)]!;
+}
+
+/** Honour HTML maxlength; prefer first name when full ФИО does not fit. */
+export async function fitTextToInputLimit(locator: Locator, value: string): Promise<string> {
+  const maxRaw = await locator.getAttribute('maxlength').catch(() => null)
+    ?? await locator.getAttribute('maxLength').catch(() => null);
+  const max = maxRaw ? Number.parseInt(maxRaw, 10) : NaN;
+  if (!Number.isFinite(max) || max <= 0 || value.length <= max) {
+    return value;
+  }
+
+  const first = firstNameOnly(value);
+  if (first.length > 0 && first.length <= max) {
+    return first;
+  }
+
+  return value.slice(0, max);
+}
+
+/** @deprecated use fitTextToInputLimit */
+export async function truncateToInputMaxLength(locator: Locator, value: string): Promise<string> {
+  return fitTextToInputLimit(locator, value);
+}
+
+/** First token of a full name ("Иван Иванов" → "Иван"). */
+export function firstNameOnly(fullName: string): string {
+  const trimmed = fullName.trim().replace(/\s+/g, ' ');
+  if (!trimmed) {
+    return trimmed;
+  }
+  return trimmed.split(' ')[0] ?? trimmed;
+}
+
+/**
+ * Detect visible client-side errors about name being too long (maxlength / «15 символов»).
+ */
+export async function detectNameTooLongValidation(
+  page: Page,
+  formRoot: Locator,
+): Promise<{ matched: boolean; message: string | null; maxHint: number | null }> {
+  const result = await formRoot.evaluate((root) => {
+    const blob = (root.textContent || '').replace(/\s+/g, ' ');
+    const maxMatch = blob.match(/длиннее[,\s]+чем\s+(\d+)\s*символ/i)
+      || blob.match(/не\s+более\s+(\d+)\s*символ/i)
+      || blob.match(/максимум\s+(\d+)\s*символ/i)
+      || blob.match(/max(?:imum)?\s*(\d+)\s*char/i);
+    const tooLong = /не\s+может\s+быть\s+длиннее|слишком\s+длинн|превышает\s+допустим|too\s+long|maxlength/i.test(blob);
+    const nameInput = root.querySelector('#af_name, input[name="name"], input[id*="name"], input[placeholder*="Имя"], input[placeholder*="имя"]') as HTMLInputElement | null;
+    const maxAttr = nameInput?.getAttribute('maxlength') || nameInput?.getAttribute('maxLength');
+    return {
+      tooLong: tooLong || Boolean(maxMatch),
+      message: maxMatch?.[0] || (tooLong ? blob.slice(0, 160) : null),
+      maxHint: maxMatch?.[1] ? Number(maxMatch[1]) : (maxAttr ? Number(maxAttr) : null),
+    };
+  }).catch(() => ({ tooLong: false, message: null, maxHint: null }));
+
+  // Also scan page-level validation tooltips outside the form root.
+  if (!result.tooLong) {
+    const pageHit = await page.evaluate(() => {
+      const blob = (document.body?.innerText || '').replace(/\s+/g, ' ');
+      const maxMatch = blob.match(/длиннее[,\s]+чем\s+(\d+)\s*символ/i);
+      if (!maxMatch && !/не\s+может\s+быть\s+длиннее/i.test(blob)) {
+        return null;
+      }
+      return {
+        message: maxMatch?.[0] || 'name too long',
+        maxHint: maxMatch?.[1] ? Number(maxMatch[1]) : null,
+      };
+    }).catch(() => null);
+
+    if (pageHit) {
+      return { matched: true, message: pageHit.message, maxHint: pageHit.maxHint };
+    }
+  }
+
+  return {
+    matched: Boolean(result.tooLong),
+    message: result.message,
+    maxHint: result.maxHint && Number.isFinite(result.maxHint) ? result.maxHint : null,
+  };
 }
 
 /** Last 10 national digits (without country code 7/8). */
@@ -719,7 +1011,7 @@ export async function ensurePhoneFullyFilled(
     logger.warn({ expected, raw: expectedPhone }, 'Expected phone has fewer than 10 digits');
   }
 
-  const input = locator.filter({ visible: true }).first();
+  const input = (await resolveEditableInput(locator)).filter({ visible: true }).first();
   const page = input.page();
   const maxAttempts = options?.maxAttempts ?? 3;
 
@@ -758,10 +1050,20 @@ export async function ensurePhoneFullyFilled(
     // Last resort: set via native value setter + input events (React/masks).
     if (attempt === maxAttempts || current.length < expected.length) {
       await input.evaluate((el, digits) => {
-        const inputEl = el as HTMLInputElement;
+        const inputEl = (
+          el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement
+            ? el
+            : el.querySelector('input:not([type="hidden"]), textarea')
+        ) as HTMLInputElement | HTMLTextAreaElement | null;
+
+        if (!inputEl) {
+          throw new Error('Phone editable input not found inside locator');
+        }
+
         inputEl.focus();
 
-        const nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
+        const nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set
+          ?? Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value')?.set;
         const fire = (value: string, data?: string) => {
           if (nativeSetter) {
             nativeSetter.call(inputEl, value);
@@ -821,33 +1123,77 @@ export async function clickVisible(locator: Locator): Promise<void> {
 }
 
 export async function ensureConsentChecked(locator: Locator): Promise<void> {
-  const consent = locator.filter({ visible: true }).first();
+  // Native checkboxes are often visually hidden (custom UI overlay) — do NOT require visible.
+  const consent = locator.first();
   if ((await consent.count()) === 0) {
     return;
   }
 
-  const disabled = await consent.isDisabled().catch(() => false);
-  const ariaDisabled = (await consent.getAttribute('aria-disabled').catch(() => null)) === 'true';
+  const meta = await consent.evaluate((el) => {
+    const tag = el.tagName.toLowerCase();
+    const type = (el.getAttribute('type') || '').toLowerCase();
+    const role = (el.getAttribute('role') || '').toLowerCase();
+    const anchor = el.closest('a') || (tag === 'a' ? el : null);
+    const nestedInput = tag === 'input'
+      ? null
+      : el.querySelector('input[type="checkbox"], input[type="radio"]');
 
-  if (disabled || ariaDisabled) {
+    return {
+      tag,
+      type,
+      role,
+      href: anchor?.getAttribute('href') || '',
+      isAnchor: Boolean(anchor),
+      nestedInputId: nestedInput?.id || null,
+      disabled: el instanceof HTMLInputElement
+        ? el.disabled
+        : el.getAttribute('aria-disabled') === 'true',
+    };
+  }).catch(() => null);
+
+  if (!meta || meta.disabled) {
     return;
   }
 
-  const tagName = await consent.evaluate((el) => el.tagName.toLowerCase()).catch(() => '');
-  const inputType = (await consent.getAttribute('type'))?.toLowerCase();
-  const role = (await consent.getAttribute('role'))?.toLowerCase();
+  // Policy / cookies document links must never be "checked".
+  if (meta.isAnchor || meta.href) {
+    logger.warn(
+      { href: meta.href, tag: meta.tag },
+      'Consent selector resolved to a link — skipped (would navigate away)',
+    );
+    return;
+  }
 
-  if (tagName === 'input' && (inputType === 'checkbox' || inputType === 'radio')) {
-    const checked = await consent.isChecked().catch(() => false);
-    if (!checked) {
-      await consent.check({ force: true }).catch(async () => {
-        await consent.click({ timeout: 5000, force: true }).catch(() => undefined);
-      });
+  // Wrapper/label with a nested native checkbox → toggle the input, not the wrapper text/links.
+  if (meta.tag !== 'input') {
+    const nested = consent.locator('input[type="checkbox"], input[type="radio"]').first();
+    if ((await nested.count()) > 0) {
+      await ensureConsentChecked(nested);
+      return;
     }
+  }
+
+  if (meta.tag === 'input' && (meta.type === 'checkbox' || meta.type === 'radio')) {
+    const checked = await consent.evaluate((el) => (
+      el instanceof HTMLInputElement ? el.checked : false
+    )).catch(() => false);
+    // Already on — never click/check again (would toggle custom UI off).
+    if (checked) {
+      return;
+    }
+    await consent.check({ force: true }).catch(async () => {
+      await consent.evaluate((el) => {
+        if (el instanceof HTMLInputElement) {
+          el.checked = true;
+          el.dispatchEvent(new Event('input', { bubbles: true }));
+          el.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+      }).catch(() => undefined);
+    });
     return;
   }
 
-  if (role === 'checkbox') {
+  if (meta.role === 'checkbox') {
     const checked = await consent
       .evaluate((el) => el.getAttribute('aria-checked') === 'true')
       .catch(() => false);
@@ -855,6 +1201,17 @@ export async function ensureConsentChecked(locator: Locator): Promise<void> {
     if (!checked) {
       await consent.click({ timeout: 5000, force: true }).catch(() => undefined);
     }
+    return;
+  }
+
+  // Last resort: click non-link control (custom toggle), never follow navigation.
+  const navigates = await consent.evaluate((el) => {
+    if (el.tagName === 'A' || el.closest('a')) return true;
+    if (el instanceof HTMLButtonElement && el.type === 'submit') return true;
+    return false;
+  }).catch(() => true);
+
+  if (navigates) {
     return;
   }
 
@@ -884,9 +1241,34 @@ export async function ensureConsentInForm(
   ].filter((selector): selector is string => Boolean(selector && selector.trim() !== ''));
 
   const uniqueSelectors = [...new Set(explicitSelectors)];
+
+  // Manual mapping left consent empty → do not touch any checkboxes
+  // (would toggle Trade-In / uncheck required policy boxes on dealer SPAs).
+  if (uniqueSelectors.length === 0) {
+    logger.info('Consent selectors empty — skipping all checkboxes');
+    return;
+  }
+
   let checked = 0;
   let skipped = 0;
   let missing = 0;
+
+  const isConsentControl = async (item: Locator): Promise<boolean> => {
+    const meta = await item.evaluate((el) => {
+      const tag = el.tagName.toLowerCase();
+      const type = (el.getAttribute('type') || '').toLowerCase();
+      const role = (el.getAttribute('role') || '').toLowerCase();
+      const isAnchor = tag === 'a' || Boolean(el.closest('a'));
+
+      return {
+        checkbox: tag === 'input' && (type === 'checkbox' || type === 'radio'),
+        aria: role === 'checkbox',
+        isAnchor,
+      };
+    }).catch(() => ({ checkbox: false, aria: false, isAnchor: false }));
+
+    return (meta.checkbox || meta.aria) && !meta.isAnchor;
+  };
 
   const processLocator = async (locator: Locator): Promise<void> => {
     const count = await locator.count();
@@ -900,19 +1282,69 @@ export async function ensureConsentInForm(
     for (let index = 0; index < count; index += 1) {
       const item = locator.nth(index);
 
-      if (!(await item.isVisible().catch(() => false))) {
+      const itemMeta = await item.evaluate((el) => {
+        const tag = el.tagName.toLowerCase();
+        const type = (el.getAttribute('type') || '').toLowerCase();
+        return {
+          tag,
+          type,
+          isNativeCheckbox: tag === 'input' && (type === 'checkbox' || type === 'radio'),
+          isAnchor: tag === 'a' || Boolean(el.closest('a')),
+          href: (el.closest('a') || (tag === 'a' ? el : null))?.getAttribute('href') || '',
+          disabled: el instanceof HTMLInputElement ? el.disabled : false,
+        };
+      }).catch(() => null);
+
+      if (!itemMeta) {
         skipped += 1;
         continue;
       }
 
-      if (await item.isDisabled().catch(() => false)) {
+      // Never click policy / cookies links saved as "consent" by mistake.
+      if (itemMeta.isAnchor || itemMeta.href) {
+        logger.warn(
+          { href: itemMeta.href },
+          'Skipping consent candidate that is a link',
+        );
         skipped += 1;
         continue;
       }
 
-      const alreadyOn = await item.isChecked().catch(async () => (
-        (await item.getAttribute('aria-checked').catch(() => null)) === 'true'
-      ));
+      // Native checkboxes may be opacity:0 — still toggle them.
+      if (!itemMeta.isNativeCheckbox) {
+        if (!(await item.isVisible().catch(() => false))) {
+          skipped += 1;
+          continue;
+        }
+      }
+
+      if (itemMeta.disabled || await item.isDisabled().catch(() => false)) {
+        skipped += 1;
+        continue;
+      }
+
+      // Old mappings sometimes store a wrapper with 2+ checkboxes inside.
+      if (!(await isConsentControl(item))) {
+        const nested = item.locator('input[type="checkbox"], input[type="radio"], [role="checkbox"]');
+        if ((await nested.count()) > 0) {
+          await processLocator(nested);
+          continue;
+        }
+      }
+
+      // Prefer DOM .checked — Playwright isChecked() can lie on opacity:0 / PrimeVue wrappers.
+      const alreadyOn = await item.evaluate((el) => {
+        if (el instanceof HTMLInputElement) {
+          return Boolean(el.checked);
+        }
+
+        const nested = el.querySelector('input[type="checkbox"], input[type="radio"]');
+        if (nested instanceof HTMLInputElement) {
+          return Boolean(nested.checked);
+        }
+
+        return el.getAttribute('aria-checked') === 'true';
+      }).catch(() => false);
 
       if (alreadyOn) {
         skipped += 1;
@@ -924,13 +1356,16 @@ export async function ensureConsentInForm(
     }
   };
 
-  if (uniqueSelectors.length > 0) {
-    for (const selector of uniqueSelectors) {
-      await processLocator(formRoot.locator(relativizeSelector(selector)));
-    }
-  } else {
-    // 0 / 1 / 2+ consent boxes — check all visible enabled ones, leave already-checked alone.
-    await processLocator(formRoot.locator('input[type="checkbox"]'));
+  for (const selector of uniqueSelectors) {
+    await processLocator(formRoot.locator(relativizeSelector(selector)));
+  }
+
+  // Mapped selectors missed entirely — log only, do NOT fall back to every form checkbox.
+  if (checked === 0 && missing > 0) {
+    logger.warn(
+      { missing, explicit: uniqueSelectors.length, selectors: uniqueSelectors },
+      'Mapped consent selectors not found — leaving checkboxes untouched',
+    );
   }
 
   logger.info({ checked, skipped, missing, explicit: uniqueSelectors.length }, 'Consent checkboxes processed');

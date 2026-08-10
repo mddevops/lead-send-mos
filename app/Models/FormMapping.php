@@ -19,6 +19,9 @@ class FormMapping extends Model
         'message_selector',
         'submit_selector',
         'open_modal_selector',
+        'pre_form_click_selectors',
+        'pre_form_strategy',
+        'quiz_container_selector',
         'form_scope_selector',
         'consent_checkbox_selector',
         'consent_checkbox_selectors',
@@ -51,6 +54,7 @@ class FormMapping extends Model
             'phone_coordinates' => 'array',
             'submit_coordinates' => 'array',
             'consent_checkbox_selectors' => 'array',
+            'pre_form_click_selectors' => 'array',
             'confidence' => 'decimal:2',
         ];
     }

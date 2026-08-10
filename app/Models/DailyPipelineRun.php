@@ -24,6 +24,8 @@ class DailyPipelineRun extends Model
         'start_time',
         'deadline_time',
         'discovery_run_id',
+        'site_ids',
+        'source',
         'campaign_id',
         'promo_sites_count',
         'new_sites_count',
@@ -35,11 +37,14 @@ class DailyPipelineRun extends Model
         'submit_failed_count',
         'submit_unknown_count',
         'error_message',
+        'pause_reason',
+        'manual_stop',
         'report',
         'alert_no_proxy_sent_at',
         'alert_zero_balance_sent_at',
         'summary_sent_at',
         'started_at',
+        'scheduled_start_at',
         'deadline_at',
         'discovery_finished_at',
         'scan_finished_at',
@@ -68,11 +73,14 @@ class DailyPipelineRun extends Model
             'submit_success_count' => 'integer',
             'submit_failed_count' => 'integer',
             'submit_unknown_count' => 'integer',
+            'manual_stop' => 'boolean',
             'report' => 'array',
+            'site_ids' => 'array',
             'alert_no_proxy_sent_at' => 'datetime',
             'alert_zero_balance_sent_at' => 'datetime',
             'summary_sent_at' => 'datetime',
             'started_at' => 'datetime',
+            'scheduled_start_at' => 'datetime',
             'deadline_at' => 'datetime',
             'discovery_finished_at' => 'datetime',
             'scan_finished_at' => 'datetime',
@@ -96,15 +104,40 @@ class DailyPipelineRun extends Model
         return $this->belongsTo(Campaign::class);
     }
 
+    /** Running or waiting to start (tick / stop targets). Not paused. */
     public function isActive(): bool
     {
         return in_array($this->status, ['pending', 'discovering', 'scanning', 'submitting'], true);
     }
 
+    public function isPausedNoProxy(): bool
+    {
+        return $this->status === 'paused_no_proxy';
+    }
+
+    /** Can be stopped from UI (incl. scheduled pending and proxy pause). */
+    public function isStoppable(): bool
+    {
+        return $this->isActive() || $this->isPausedNoProxy();
+    }
+
+    public function canAutoResume(): bool
+    {
+        if (! $this->isPausedNoProxy() || $this->manual_stop) {
+            return false;
+        }
+
+        if ($this->deadline_at !== null && now()->greaterThanOrEqualTo($this->deadline_at)) {
+            return false;
+        }
+
+        return true;
+    }
+
     public function stageNumber(): int
     {
         return match ($this->status) {
-            'pending', 'discovering' => 1,
+            'pending', 'discovering', 'paused_no_proxy' => 1,
             'scanning' => 2,
             'submitting' => 3,
             default => match (true) {
@@ -118,17 +151,45 @@ class DailyPipelineRun extends Model
 
     public function stageLabel(): string
     {
+        $isManual = ($this->source ?? 'discovery') === 'sites';
+
         return match ($this->status) {
-            'pending', 'discovering' => '1/3 Скан Яндекса',
-            'scanning' => '2/3 Скан форм',
-            'submitting' => '3/3 Отправка форм'
-                .($this->submit_cycle_current > 0 ? " (круг {$this->submit_cycle_current})" : ''),
-            'completed' => 'Готово (3/3)',
+            'pending' => $this->scheduled_start_at
+                ? 'Ожидание старта '.$this->scheduled_start_at->format('d.m H:i')
+                : 'Ожидание',
+            'discovering' => $isManual ? 'Подготовка сайтов' : '1/3 Скан Яндекса',
+            'scanning' => $isManual
+                ? ($this->submit_forms ? '1/2 Скан форм' : 'Скан форм')
+                : '2/3 Скан форм',
+            'submitting' => match (true) {
+                $isManual && ! $this->scan_forms => 'Отправка форм'
+                    .($this->submit_cycle_current > 0 ? " (круг {$this->submit_cycle_current})" : ''),
+                $isManual => '2/2 Отправка форм'
+                    .($this->submit_cycle_current > 0 ? " (круг {$this->submit_cycle_current})" : ''),
+                default => '3/3 Отправка форм'
+                    .($this->submit_cycle_current > 0 ? " (круг {$this->submit_cycle_current})" : ''),
+            },
+            'paused_no_proxy' => 'Пауза: нет прокси',
+            'completed' => 'Готово',
             'cancelled' => 'Остановлен',
             'failed' => 'Ошибка',
             'timeout' => 'Дедлайн',
             default => $this->status,
         };
+    }
+
+    public function sitesCount(): int
+    {
+        if (is_array($this->site_ids) && $this->site_ids !== []) {
+            return count($this->site_ids);
+        }
+
+        $reportCount = (int) ($this->report['sites_count'] ?? 0);
+        if ($reportCount > 0) {
+            return $reportCount;
+        }
+
+        return (int) $this->new_sites_count + (int) $this->promo_sites_count;
     }
 
     public function statusLabel(): string
@@ -138,6 +199,7 @@ class DailyPipelineRun extends Model
             'discovering' => 'Скан Яндекса',
             'scanning' => 'Скан форм',
             'submitting' => 'Отправка форм',
+            'paused_no_proxy' => 'Пауза: нет прокси',
             'completed' => 'Завершён',
             'cancelled' => 'Остановлен',
             'failed' => 'Ошибка',

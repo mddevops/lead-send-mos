@@ -24,6 +24,7 @@ class Site extends Model
         'rating_value',
         'status',
         'source',
+        'is_promo',
         'notes',
         'last_scan_at',
         'discovered_at',
@@ -37,6 +38,7 @@ class Site extends Model
             'discovered_at' => 'datetime',
             'rating_count' => 'integer',
             'rating_value' => 'float',
+            'is_promo' => 'boolean',
         ];
     }
 

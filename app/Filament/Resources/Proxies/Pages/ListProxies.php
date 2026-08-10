@@ -26,27 +26,32 @@ class ListProxies extends ListRecords
                 ->color('warning')
                 ->requiresConfirmation()
                 ->modalHeading('Проверить прокси')
-                ->modalDescription('Проверяется выход в интернет через каждый не отключённый прокси (запрос к api.ipify.org). Нерабочие и не отвечающие будут отключены.')
+                ->modalDescription('Проверяется выход в интернет через каждый прокси со статусом active / disabled / failed (api.ipify.org). Рабочие включаются, мёртвые отключаются.')
                 ->modalSubmitActionLabel('Проверить')
                 ->action(function (): void {
                     set_time_limit(0);
 
-                    $proxies = Proxy::query()
-                        ->where('status', '!=', 'disabled')
-                        ->orderBy('id')
-                        ->get();
+                    $checker = app(ProxyHealthChecker::class);
+                    $proxies = $checker->proxiesForScheduledCheck();
 
                     if ($proxies->isEmpty()) {
                         Notification::make()
                             ->title('Нет прокси для проверки')
-                            ->body('Все прокси уже отключены или список пуст.')
+                            ->body('Список пуст или все прокси в cooldown.')
                             ->warning()
                             ->send();
 
                         return;
                     }
 
-                    $report = app(ProxyHealthChecker::class)->checkAndDisableDead($proxies);
+                    $report = $checker->checkAndDisableDead($proxies);
+
+                    $pipelines = app(\App\Services\DailyPipelineService::class);
+                    if (($report['has_active'] ?? false) || \App\Models\Proxy::query()->where('status', 'active')->exists()) {
+                        $pipelines->resumePausedForProxy();
+                    } else {
+                        $pipelines->pauseActivePipelinesForNoProxy();
+                    }
 
                     $lines = [
                         "Проверено: {$report['checked']}",

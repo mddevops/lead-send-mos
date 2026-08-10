@@ -40,10 +40,66 @@ class FormMappingForm
                     ->required(),
                 TextInput::make('open_modal_selector')
                     ->label('CSS селектор кнопки открытия формы (modal)'),
+                Select::make('pre_form_strategy')
+                    ->label('Стратегия до формы (квиз/чат)')
+                    ->options([
+                        'selectors' => 'Кликнуть сохранённые шаги',
+                        'quiz_auto' => 'Авто: случайный вариант на шаге квиза',
+                    ])
+                    ->nullable(),
+                Textarea::make('pre_form_click_selectors')
+                    ->label('Шаги квиза (селекторы, по одному в строке)')
+                    ->helperText('Упорядоченные клики до появления телефона. Для strategy=selectors.')
+                    ->formatStateUsing(function ($state): ?string {
+                        if (is_array($state)) {
+                            return implode("\n", array_values(array_filter($state)));
+                        }
+
+                        return is_string($state) ? $state : null;
+                    })
+                    ->dehydrateStateUsing(function ($state): ?array {
+                        $parts = preg_split('/\r\n|\r|\n|,/', (string) ($state ?? '')) ?: [];
+                        $list = array_values(array_filter(array_map(
+                            static fn (string $part): string => trim($part),
+                            $parts,
+                        )));
+
+                        return $list === [] ? null : $list;
+                    })
+                    ->columnSpanFull(),
+                TextInput::make('quiz_container_selector')
+                    ->label('Контейнер квиза (для quiz_auto)'),
                 TextInput::make('form_scope_selector')
                     ->label('CSS селектор области формы (шаг 2 ручного маппинга)'),
                 TextInput::make('consent_checkbox_selector')
-                    ->label('CSS селектор чекбокса согласия'),
+                    ->label('Чекбокс согласия 1'),
+                TextInput::make('consent_checkbox_selectors')
+                    ->label('Чекбокс согласия 2 (и далее через запятую)')
+                    ->helperText('Опционально. Можно указать второй селектор; при сохранении оба попадут в consent_checkbox_selectors.')
+                    ->formatStateUsing(function ($state, $record): ?string {
+                        if (is_array($state) && count($state) > 1) {
+                            return implode(', ', array_slice(array_values(array_filter($state)), 1));
+                        }
+
+                        $selectors = $record?->consent_checkbox_selectors;
+
+                        if (is_array($selectors) && count($selectors) > 1) {
+                            return implode(', ', array_slice(array_values(array_filter($selectors)), 1));
+                        }
+
+                        return null;
+                    })
+                    ->dehydrateStateUsing(function ($state, $get): ?array {
+                        $first = trim((string) ($get('consent_checkbox_selector') ?? ''));
+                        $extra = array_values(array_filter(array_map(
+                            static fn (string $part): string => trim($part),
+                            preg_split('/\s*,\s*/', (string) ($state ?? '')) ?: [],
+                        )));
+
+                        $all = array_values(array_filter([$first !== '' ? $first : null, ...$extra]));
+
+                        return $all === [] ? null : $all;
+                    }),
                 TextInput::make('success_selector')
                     ->label('CSS селектор успеха'),
                 TextInput::make('error_selector')

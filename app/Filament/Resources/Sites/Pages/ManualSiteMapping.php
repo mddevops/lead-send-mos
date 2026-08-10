@@ -57,13 +57,18 @@ class ManualSiteMapping extends Page implements HasForms
 
         $scopeParts = CssSelectorBuilder::parse($formScope);
 
+        $consentSelectors = is_array($mapping?->consent_checkbox_selectors)
+            ? array_values(array_filter($mapping->consent_checkbox_selectors))
+            : [];
+
         $this->form->fill([
             'name_selector' => $mapping?->name_selector,
             'phone_selector' => $mapping?->phone_selector,
             'submit_selector' => $mapping?->submit_selector,
             'open_modal_selector' => $mapping?->open_modal_selector,
             'form_scope_selector' => $formScope,
-            'consent_checkbox_selector' => $mapping?->consent_checkbox_selector,
+            'consent_checkbox_selector' => $mapping?->consent_checkbox_selector ?? ($consentSelectors[0] ?? null),
+            'consent_checkbox_2_selector' => $consentSelectors[1] ?? null,
             'success_selector' => $mapping?->success_selector,
             'error_selector' => $mapping?->error_selector,
             'iframe_selector' => $mapping?->iframe_selector,
@@ -140,7 +145,7 @@ class ManualSiteMapping extends Page implements HasForms
                         ...$this->fieldBuilderSection('Имя', 'name', 'input'),
                         ...$this->fieldBuilderSection('Телефон', 'phone', 'input'),
                         ...$this->fieldBuilderSection('Кнопка отправки', 'submit', 'button'),
-                        ...$this->fieldBuilderSection('Чекбокс согласия (опционально)', 'consent', 'input'),
+                        ...$this->fieldBuilderSection('Чекбокс согласия 1', 'consent', 'input'),
                     ]),
                 Section::make('Шаг 4 — проверка успеха (рекомендуется)')
                     ->columns(2)
@@ -226,7 +231,11 @@ class ManualSiteMapping extends Page implements HasForms
                         TextInput::make('form_scope_selector')->label('Область формы (шаг 2)'),
                         TextInput::make('name_selector')->label('Имя'),
                         TextInput::make('phone_selector')->label('Телефон'),
-                        TextInput::make('consent_checkbox_selector')->label('Чекбокс согласия'),
+                        TextInput::make('consent_checkbox_selector')->label('Чекбокс согласия 1'),
+                        TextInput::make('consent_checkbox_2_selector')
+                            ->label('Чекбокс согласия 2')
+                            ->placeholder('#agree2')
+                            ->helperText('Если на форме два согласия — укажите второй селектор.'),
                         TextInput::make('submit_selector')->label('Submit'),
                         Placeholder::make('selector_hint')
                             ->label('')
@@ -343,6 +352,14 @@ class ManualSiteMapping extends Page implements HasForms
             if (in_array($prefix, $optionalFromBuilder, true) || $this->isBuilderGroupEmpty($data, $prefix)) {
                 $data[$selectorKey] = null;
             }
+        }
+
+        $secondConsent = trim((string) ($data['consent_checkbox_2_selector'] ?? ''));
+        $firstConsent = trim((string) ($data['consent_checkbox_selector'] ?? ''));
+        $consentList = array_values(array_filter([$firstConsent !== '' ? $firstConsent : null, $secondConsent !== '' ? $secondConsent : null]));
+        $data['consent_checkbox_selectors'] = $consentList === [] ? null : $consentList;
+        if ($firstConsent === '' && $consentList !== []) {
+            $data['consent_checkbox_selector'] = $consentList[0];
         }
 
         if (($data['captcha_type'] ?? 'none') === 'none') {

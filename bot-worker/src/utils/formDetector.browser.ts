@@ -35,7 +35,7 @@ export function collectFormsInDocument(): FormDetectionResult {
   const SCORE_AUTH_PENALTY = -100;
 
   const PHONE_PLACEHOLDER_RE =
-    /ваш\s+номер\s+телефона|номер\s+телефона|ваш\s+телефон|телефон\*?|phone|\+7|8\s*\(|_{2,}|\(\s*_{2,}|\+\s*7/i;
+    /ваш\s+номер\s+телефона|номер\s+телефона|ваш\s+телефон|телефон\*?|phone|\+7(?:\s|\(|_)|8\s*\(\s*_|\+\s*7/i;
   const PHONE_NAME_RE =
     /(?:^|[_-])(phone|tel|mobile|telefon|телефон|телефончик|phone_num|phonenumber)(?:$|[_-])/i;
   // Site builders (e.g. mary{hash}phone / mary{hash}name) — id ends with field role.
@@ -126,12 +126,24 @@ export function collectFormsInDocument(): FormDetectionResult {
   }
 
   function nearbyFieldLabel(input: HTMLElement): string {
-    const wrap = input.closest('.form__field, .form-field, .field, .input, .form-group, .UITextField, [class*="field"]')
-      ?? input.parentElement;
-    if (!wrap) {
-      return '';
+    // Prefer the nearest field wrapper — avoid climbing to a parent that wraps name+phone together
+    // (e.g. broad [class*="field"] matching the whole form).
+    const wrap = input.closest(
+      '.form__field, .form-field, .form-group, .UITextField, .t-input-group, .input-group, [class*="form__field"], [class*="FormField"]',
+    ) ?? input.parentElement;
+    if (!wrap || wrap === input.closest('form') || wrap === document.body) {
+      // Fall back to immediate parent only (not a high-level container).
+      const parent = input.parentElement;
+      if (!parent || parent === input.closest('form')) {
+        return '';
+      }
+      return readLocalLabel(parent, input);
     }
 
+    return readLocalLabel(wrap, input);
+  }
+
+  function readLocalLabel(wrap: Element, input: HTMLElement): string {
     const labelEl = wrap.querySelector(
       'label, .label, .form__label, .placeholder, .placeholder-content, [class*="label"], [class*="placeholder"]',
     );
@@ -661,17 +673,20 @@ export function collectFormsInDocument(): FormDetectionResult {
   }
 
   function isPhoneField(input: HTMLInputElement): boolean {
-    const context = inputContext(input);
-
-    if (NON_LEAD_PHONE_RE.test(context)) {
-      return false;
-    }
-
     const dataType = (input.getAttribute('data-type') || '').toUpperCase();
     const dataName = (input.getAttribute('data-name') || '').toLowerCase();
 
+    // Explicit semantic types win — never treat NAME as phone via parent context bleed.
+    if (dataType === 'NAME' || dataType === 'FIO' || dataType === 'EMAIL') {
+      return false;
+    }
+
     if (dataType === 'PHONE' || dataType === 'TEL') {
       return true;
+    }
+
+    if (/name|fio|имя/.test(dataName) && !/phone|tel|telefon|телефон/.test(dataName)) {
+      return false;
     }
 
     if (/phone|tel|telefon|телефон/.test(dataName)) {
@@ -685,6 +700,20 @@ export function collectFormsInDocument(): FormDetectionResult {
     const id = (input.id || '').trim();
     const placeholder = (input.getAttribute('placeholder') || '').trim();
     const className = typeof input.className === 'string' ? input.className : '';
+    const ownBlob = [name, id, placeholder, autocomplete, className].join(' ');
+
+    // Own attributes clearly say "name" — do not promote to phone via parent label text.
+    if (NAME_PLACEHOLDER_RE.test(placeholder) || NAME_ID_SUFFIX_RE.test(id) || /(?:^|[_-])(name|fio|имя)(?:$|[_-])/i.test(name)) {
+      if (!PHONE_PLACEHOLDER_RE.test(placeholder) && type !== 'tel' && inputMode !== 'tel') {
+        return false;
+      }
+    }
+
+    const context = inputContext(input);
+
+    if (NON_LEAD_PHONE_RE.test(context) || NON_LEAD_PHONE_RE.test(ownBlob)) {
+      return false;
+    }
 
     if (type === 'tel' || inputMode === 'tel' || autocomplete === 'tel' || autocomplete === 'tel-national') {
       return true;

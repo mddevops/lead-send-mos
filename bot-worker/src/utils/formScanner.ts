@@ -4,7 +4,8 @@ import { config } from '../config';
 import { getCollectFormsInDocument } from './browserEvaluate';
 import { dismissCommonOverlays, humanWarmupScroll, relativizeSelector, scrollPageToRevealContent, closeOpenModal, openFormModal } from './formInteractions';
 import { waitForLeadInputsViaMutation } from './domMutationWait';
-import { buildIframeSelector, discoverFormsViaModals } from './formModalDiscovery';
+import { buildIframeSelector, discoverFormsViaModals, discoverFormsViaQuiz } from './formModalDiscovery';
+import { pageLooksLikeQuiz } from './quizAdvance';
 import { navigateToUrl } from './navigate';
 import {
   clampMaxFormsPerSite,
@@ -27,7 +28,7 @@ import {
   URL_SCORE_HTML_LEAD_HINT,
   URL_SCORE_LOW_VALUE,
 } from './formScanUtils';
-import { MIN_FORM_SCORE } from './formDetectionConstants';
+import { isLeadPhoneSelector, MIN_FORM_SCORE } from './formDetectionConstants';
 import { discoverUrlsFromRobotsAndSitemaps, pageHtmlLooksLikeLeadForm } from './urlDiscovery';
 
 export type DetectedFormMapping = {
@@ -39,6 +40,9 @@ export type DetectedFormMapping = {
   consent_checkbox_selectors: string[];
   form_scope_selector: string | null;
   open_modal_selector: string | null;
+  pre_form_click_selectors?: string[] | null;
+  pre_form_strategy?: 'selectors' | 'quiz_auto' | null;
+  quiz_container_selector?: string | null;
   iframe_selector?: string | null;
   confidence: number;
   fingerprint: string;
@@ -74,6 +78,7 @@ export type ScanDiagnostics = {
   modalEntryPoints: number;
   inlineForms: number;
   modalForms: number;
+  quizForms: number;
   brandPagesExpanded: number;
 };
 
@@ -97,25 +102,12 @@ export async function scanSiteForForms(
   const found: DetectedFormMapping[] = [];
   const seenFingerprints = new Set<string>();
   const visited = new Set<string>();
+  // Start with homepage ONLY. /credit /contacts /new are seeded later —
+  // only if the homepage is not a quiz funnel (or quiz advance failed).
   const queue: string[] = [baseUrl];
   const htmlHintBoost = new Map<string, number>();
+  let deferredCrawlSeeded = false;
 
-  // Prefer contacts/callback pages — many dealer sites have lead forms only there.
-  for (const seeded of seedHighValueUrls(baseUrl)) {
-    if (seeded !== baseUrl && !queue.includes(seeded)) {
-      queue.push(seeded);
-    }
-  }
-
-  // Fast discovery: robots.txt + sitemaps (HTTP only).
-  const sitemapUrls = await discoverUrlsFromRobotsAndSitemaps(baseUrl);
-  if (sitemapUrls.length > 0) {
-    logger.info({ count: sitemapUrls.length }, 'Sitemap/robots URL discovery finished');
-    enqueuePrioritized(queue, sitemapUrls.slice(0, 120), baseUrl, visited);
-  }
-
-  // Put high-value URLs right after homepage.
-  queue.splice(1, queue.length - 1, ...prioritizeLinks(queue.slice(1), baseUrl));
   const pageErrors: string[] = [];
   let phonesSeen = 0;
   let formsScanned = 0;
@@ -123,13 +115,49 @@ export async function scanSiteForForms(
   let modalEntryPoints = 0;
   let inlineForms = 0;
   let modalForms = 0;
+  let quizForms = 0;
   let brandPagesExpanded = 0;
   const brandUrlsSeen = new Set<string>();
 
   logger.info(
     { startUrl: baseUrl, maxForms, maxPages, oneMappingPerPage, discoverModals, queueSeeded: queue.length },
-    'Starting flexible form scan',
+    'Starting flexible form scan (homepage first; contact/credit seeds deferred)',
   );
+
+  const seedDealerPagesIfNeeded = async (reason: string) => {
+    if (deferredCrawlSeeded) {
+      return;
+    }
+    if (found.some((form) => form.pre_form_strategy === 'quiz_auto')) {
+      deferredCrawlSeeded = true;
+      logger.info({ reason, found: found.length }, 'Skip contact/credit seeds — quiz mapping already saved');
+      return;
+    }
+    if (found.some((form) => form.confidence >= 70) && found.length >= Math.min(2, maxForms)) {
+      deferredCrawlSeeded = true;
+      logger.info({ reason, found: found.length }, 'Skip contact/credit seeds — strong forms already found');
+      return;
+    }
+
+    deferredCrawlSeeded = true;
+    for (const seeded of seedHighValueUrls(baseUrl)) {
+      if (seeded !== baseUrl && !visited.has(seeded) && !queue.includes(seeded)) {
+        queue.push(seeded);
+      }
+    }
+
+    const sitemapUrls = await discoverUrlsFromRobotsAndSitemaps(baseUrl);
+    if (sitemapUrls.length > 0) {
+      logger.info({ count: sitemapUrls.length }, 'Sitemap/robots URL discovery finished');
+      enqueuePrioritized(queue, sitemapUrls.slice(0, 120), baseUrl, visited);
+    }
+
+    if (queue.length > 1) {
+      queue.splice(0, queue.length, queue[0], ...prioritizeLinks(queue.slice(1), baseUrl));
+    }
+
+    logger.info({ reason, queueSize: queue.length }, 'Seeded contact/credit/catalog pages after homepage pass');
+  };
 
   // Stop as soon as TARGET_FORMS is reached — do not keep crawling past maxForms.
   let pagesScanned = 0;
@@ -193,12 +221,17 @@ export async function scanSiteForForms(
       await dismissCommonOverlays(page);
       await page.waitForSelector('body', { timeout: 10000 }).catch(() => undefined);
 
+      const isHomepage = normalizePageUrl(currentUrl) === baseUrl;
+
       // Prefer short settle over networkidle (analytics widgets never go idle on dealer sites).
-      const settleMs = isModelCardUrl(currentUrl)
-        ? Math.min(config.BOT_SCAN_PAGE_WAIT_MS, 900)
-        : onStockListing
+      // Homepage may host a chat quiz — give it more time to mount bubbles/cards.
+      const settleMs = isHomepage
+        ? Math.max(config.BOT_SCAN_PAGE_WAIT_MS, 2500)
+        : isModelCardUrl(currentUrl)
           ? Math.min(config.BOT_SCAN_PAGE_WAIT_MS, 900)
-          : Math.min(config.BOT_SCAN_PAGE_WAIT_MS, 1500);
+          : onStockListing
+            ? Math.min(config.BOT_SCAN_PAGE_WAIT_MS, 900)
+            : Math.min(config.BOT_SCAN_PAGE_WAIT_MS, 1500);
       await page.waitForTimeout(settleMs);
       await humanWarmupScroll(page);
 
@@ -206,8 +239,20 @@ export async function scanSiteForForms(
         await scrollPageToRevealContent(page);
       }
 
+      if (isHomepage) {
+        // Wait for any answer-like UI (chat, cards, chips, buttons) — not a specific CSS framework.
+        await page.locator(
+          'button, [role="button"], label, .card.cursor-pointer, [class*="cursor-pointer"], .chat-bubble, [class*="quiz" i]',
+        ).first()
+          .waitFor({ state: 'visible', timeout: 8000 })
+          .catch(() => undefined);
+      }
+
       await waitForDetectableForms(page);
-      await page.waitForSelector('input, textarea, button, form', { timeout: 4000 }).catch(() => undefined);
+      await page.waitForSelector(
+        'input, textarea, button, form, label, [role="button"], .card.cursor-pointer, [class*="cursor-pointer"]',
+        { timeout: 4000 },
+      ).catch(() => undefined);
 
       let pageStats = await page.evaluate(() => ({
         inputs: document.querySelectorAll('input').length,
@@ -215,10 +260,13 @@ export async function scanSiteForForms(
         phones: document.querySelectorAll(
           'input[type="tel"], input[data-type="PHONE"], input[name*="phone" i], input[placeholder*="тел" i]',
         ).length,
+        answerControls: document.querySelectorAll(
+          'button, [role="button"], label, .card.cursor-pointer, [class*="cursor-pointer"]',
+        ).length,
       }));
 
       // Tilda / heavy promo landing: scripts sometimes finish late.
-      if (pageStats.inputs === 0 && pageStats.forms === 0) {
+      if (pageStats.inputs === 0 && pageStats.forms === 0 && pageStats.answerControls < 2) {
         await page.waitForTimeout(2000);
         await scrollPageToRevealContent(page);
         await waitForDetectableForms(page);
@@ -227,6 +275,9 @@ export async function scanSiteForForms(
           forms: document.querySelectorAll('form').length,
           phones: document.querySelectorAll(
             'input[type="tel"], input[data-type="PHONE"], input[name*="phone" i], input[placeholder*="тел" i]',
+          ).length,
+          answerControls: document.querySelectorAll(
+            'button, [role="button"], label, .card.cursor-pointer, [class*="cursor-pointer"]',
           ).length,
         }));
       }
@@ -249,6 +300,58 @@ export async function scanSiteForForms(
         oneMappingPerPage,
         maxForms,
       });
+
+      // Chat/quiz FIRST (before modal CTA clicks that can leave the homepage).
+      let looksLikeQuiz = await pageLooksLikeQuiz(page);
+      const hasQuizMapping = found.some((form) => form.pre_form_strategy === 'quiz_auto');
+      const stillNeedsForm = !found.some((form) => form.confidence >= 70) && found.length < maxForms;
+      const shouldTryQuiz = discoverModals
+        && !hasQuizMapping
+        && found.length < maxForms
+        && (stillNeedsForm || looksLikeQuiz || isHomepage);
+
+      if (shouldTryQuiz && (looksLikeQuiz || isHomepage)) {
+        if (!looksLikeQuiz && isHomepage) {
+          // One more wait — tenet chat mounts after hero/consent.
+          await page.waitForTimeout(2000);
+          looksLikeQuiz = await pageLooksLikeQuiz(page);
+        }
+
+        if (looksLikeQuiz || stillNeedsForm) {
+          logger.info({ url: currentUrl, looksLikeQuiz, isHomepage }, 'Trying quiz/chat advance before other pages');
+          const quizResult = await discoverFormsViaQuiz(page, currentUrl);
+          quizForms += quizResult.forms.length;
+
+          const quizWithCaptcha = quizResult.forms.map((form) => ({
+            ...form,
+            ...captcha,
+          }));
+
+          await appendValidatedForms(page, found, seenFingerprints, quizWithCaptcha, {
+            oneMappingPerPage,
+            maxForms,
+          });
+
+          logger.info(
+            {
+              url: currentUrl,
+              quizFormsFound: quizResult.forms.length,
+              steps: quizResult.steps,
+              reachedForm: quizResult.reachedForm,
+              looksLikeQuiz,
+            },
+            'Quiz/chat discovery finished',
+          );
+
+          if (quizResult.forms.length > 0) {
+            logger.info(
+              { url: currentUrl, found: found.length },
+              'Quiz form saved — stopping further page crawl',
+            );
+            break;
+          }
+        }
+      }
 
       // Skip heavy modal probing only when we already have a high-confidence lead form.
       const hasStrongForm = found.some((form) => form.confidence >= 70);
@@ -281,6 +384,11 @@ export async function scanSiteForForms(
           },
           'Modal discovery finished',
         );
+      }
+
+      // Homepage done without a quiz mapping → now allow /credit /contacts crawl.
+      if (isHomepage) {
+        await seedDealerPagesIfNeeded(found.length > 0 ? 'homepage_had_forms' : 'homepage_no_quiz_form');
       }
 
       const foundOnThisPage = found.length > foundBeforePage;
@@ -405,11 +513,16 @@ export async function scanSiteForForms(
       const message = error instanceof Error ? error.message : String(error);
       pageErrors.push(`${currentUrl}: ${message}`);
       logger.warn({ url: currentUrl, err: message }, 'Failed to scan page');
+      // Do not flood /credit /contacts after a hard homepage 404 — those seeds 404 too on quiz SPAs.
+      if (normalizePageUrl(currentUrl) === baseUrl && !/^HTTP 4\d\d$/i.test(message.trim())) {
+        await seedDealerPagesIfNeeded('homepage_scan_error');
+      }
     }
   }
 
   // Multi-brand / multi-card: clone template onto other car pages until maxForms.
-  if (found.length < maxForms) {
+  // Do not clone quiz_auto mappings onto /credit /model pages.
+  if (found.length < maxForms && !found.some((form) => form.pre_form_strategy === 'quiz_auto')) {
     brandPagesExpanded = await expandMappingsAcrossBrandPages(page, baseUrl, found, {
       brandUrls: [...brandUrlsSeen],
       maxForms,
@@ -431,6 +544,7 @@ export async function scanSiteForForms(
     modalEntryPoints,
     inlineForms,
     modalForms,
+    quizForms,
     brandPagesExpanded,
   };
 
@@ -1028,10 +1142,38 @@ async function verifyMappingWorksOnPage(page: Page, template: DetectedFormMappin
 
 async function navigateToPage(page: Page, url: string): Promise<void> {
   const response = await navigateToUrl(page, url, { timeoutMs: 60000, retries: 1 });
+  const status = response?.status() ?? 0;
 
-  if (response && response.status() >= 400) {
-    throw new Error(`HTTP ${response.status()}`);
+  if (status < 400) {
+    return;
   }
+
+  // Next.js / SPA soft-404: document status can be 404 while chat/quiz still renders.
+  const usable = await page.evaluate(() => {
+    const text = (document.body?.innerText || '').replace(/\s+/g, ' ').trim();
+    const hasInteractive = !!document.querySelector(
+      '.chat-bubble, [class*="chat-bubble"], .card.cursor-pointer, form, input[type="tel"], input, button.btn',
+    );
+    const head = `${document.title} ${text.slice(0, 240)}`;
+    const classic404 = /404|not\s*found|страница не найдена|не существует/i.test(head)
+      && text.length < 400
+      && !hasInteractive;
+    return {
+      textLen: text.length,
+      hasInteractive,
+      classic404,
+    };
+  }).catch(() => ({ textLen: 0, hasInteractive: false, classic404: true }));
+
+  if (usable.hasInteractive || (usable.textLen > 250 && !usable.classic404)) {
+    logger.warn(
+      { url, status, textLen: usable.textLen, hasInteractive: usable.hasInteractive },
+      'HTTP error status but page content looks usable — continue scan',
+    );
+    return;
+  }
+
+  throw new Error(`HTTP ${status}`);
 }
 
 async function isBlockedByAntiBot(page: Page): Promise<boolean> {
@@ -1055,6 +1197,10 @@ function toDetectedForm(
   iframeSelector: string | null,
 ): DetectedFormMapping | null {
   if (raw.score < MIN_FORM_SCORE) {
+    return null;
+  }
+
+  if (!isLeadPhoneSelector(raw.phoneSelector)) {
     return null;
   }
 

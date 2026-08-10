@@ -6,12 +6,14 @@ import { captureAndUploadScreenshot } from '../services/screenshotService';
 import { sendCampaignRunResult } from '../services/laravelApi';
 import {
   clickVisible,
+  detectNameTooLongValidation,
   dismissCommonOverlays,
   ensureActiveLeadFormRoot,
   ensureConsentInForm,
   ensurePhoneFullyFilled,
   fieldLocator,
   fillField,
+  firstNameOnly,
   humanWarmupScroll,
   openFormModal,
   openFormModalWithFallbacks,
@@ -19,6 +21,7 @@ import {
   resolveLeadFieldsInRoot,
   resolveModalFormRoot,
   scrollPageToRevealContent,
+  correctSwappedNamePhoneFields,
 } from '../utils/formInteractions';
 import { observeDomMutations } from '../utils/domMutationWait';
 import { SUCCESS_TEXT_PATTERN } from '../utils/formDetectionConstants';
@@ -27,6 +30,7 @@ import { pickFillBehavior } from '../utils/fillBehaviors';
 import { attachFormCaptchaWatcher, resolveCaptcha } from '../utils/captchaHandler';
 import { navigateToUrl } from '../utils/navigate';
 import { normalizePageUrl } from '../utils/formScanUtils';
+import { runPreFormSteps } from '../utils/quizAdvance';
 import crypto from 'node:crypto';
 
 const logger = pino({ name: 'submit-lead' });
@@ -55,6 +59,9 @@ type SubmitLeadPayload = {
     phone_selector: string;
     submit_selector: string;
     open_modal_selector?: string | null;
+    pre_form_click_selectors?: string[] | null;
+    pre_form_strategy?: 'selectors' | 'quiz_auto' | null;
+    quiz_container_selector?: string | null;
     form_scope_selector?: string | null;
     consent_checkbox_selector?: string | null;
     consent_checkbox_selectors?: string[] | null;
@@ -153,6 +160,11 @@ export async function submitLead(payload: SubmitLeadPayload): Promise<void> {
         return;
       }
 
+      // Ignore analytics/beacon responses (Yandex Metrika etc.) — they blow DB columns and aren't the form POST.
+      if (/mc\.yandex|google-analytics|googletagmanager|facebook\.com\/tr|vk\.com\/rtrg/i.test(response.url())) {
+        return;
+      }
+
       responseUrl = response.url();
       responseStatus = status;
 
@@ -194,15 +206,46 @@ export async function submitLead(payload: SubmitLeadPayload): Promise<void> {
         },
         'Using form root inside open modal',
       );
-    } else if (payload.mapping.iframe_selector) {
-      formRoot = page.locator('body');
-    } else if (payload.mapping.form_scope_selector) {
-      logger.info({ selector: payload.mapping.form_scope_selector }, 'Using form scope from mapping');
-      formRoot = await resolveFormRoot(page, payload.mapping.form_scope_selector);
-    } else {
-      await humanWarmupScroll(page);
-      await scrollPageToRevealContent(page);
-      formRoot = await resolveFormRoot(page, null);
+    }
+
+    // Quiz/chat funnels: answer steps until phone form appears (or run mapped click chain).
+    const hasPreForm = Boolean(
+      payload.mapping.pre_form_strategy
+      || (Array.isArray(payload.mapping.pre_form_click_selectors)
+        && payload.mapping.pre_form_click_selectors.length > 0),
+    );
+    if (hasPreForm) {
+      logger.info(
+        {
+          strategy: payload.mapping.pre_form_strategy ?? null,
+          steps: payload.mapping.pre_form_click_selectors?.length ?? 0,
+          quizRoot: payload.mapping.quiz_container_selector ?? null,
+        },
+        'Running pre-form quiz/chat steps',
+      );
+      await runPreFormSteps(page, payload.mapping);
+      await page.waitForTimeout(500);
+    }
+
+    if (!payload.mapping.open_modal_selector) {
+      if (payload.mapping.iframe_selector) {
+        formRoot = page.locator('body');
+      } else if (payload.mapping.form_scope_selector) {
+        logger.info({ selector: payload.mapping.form_scope_selector }, 'Using form scope from mapping');
+        formRoot = await resolveFormRoot(page, payload.mapping.form_scope_selector);
+      } else if (hasPreForm) {
+        // After quiz, prefer the form that now contains the phone field.
+        formRoot = await resolveFormRoot(page, payload.mapping.form_scope_selector ?? null);
+      } else {
+        await humanWarmupScroll(page);
+        await scrollPageToRevealContent(page);
+        formRoot = await resolveFormRoot(page, null);
+      }
+    } else if (hasPreForm) {
+      // Modal opened first, then quiz inside — re-resolve root after steps.
+      formRoot = await resolveModalFormRoot(page, payload.mapping.form_scope_selector).catch(
+        async () => resolveFormRoot(page, payload.mapping.form_scope_selector ?? null),
+      );
     }
 
     const nameSelector = (payload.mapping.name_selector ?? '').trim();
@@ -222,22 +265,27 @@ export async function submitLead(payload: SubmitLeadPayload): Promise<void> {
     let nameCount = mappedName ? await mappedName.count() : 0;
     let phoneCount = await phoneField.count();
 
-    const resolvedName = nameCount > 0 && mappedName
+    let resolvedName = nameCount > 0 && mappedName
       ? mappedName
       : nameFallback;
-    const resolvedPhone = phoneCount > 0 ? phoneField : phoneFallback;
+    let resolvedPhone = phoneCount > 0 ? phoneField : phoneFallback;
+
+    const roleFix = await correctSwappedNamePhoneFields(formRoot, resolvedName, resolvedPhone);
+    resolvedName = roleFix.name;
+    resolvedPhone = roleFix.phone;
 
     nameCount = await resolvedName.count();
     phoneCount = await resolvedPhone.count();
 
     // Only treat name as present if mapping asked for it OR a clear name field is visible.
-    const shouldFillName = Boolean(nameSelector) || nameCount > 0;
+    const shouldFillName = Boolean(nameSelector) || nameCount > 0 || roleFix.corrected;
 
     logger.info(
       {
         name: nameSelector || null,
         phone: payload.mapping.phone_selector,
         submit: payload.mapping.submit_selector,
+        correctedRoles: roleFix.corrected,
         counts: {
           name: nameCount,
           phone: phoneCount,
@@ -285,13 +333,13 @@ export async function submitLead(payload: SubmitLeadPayload): Promise<void> {
 
         if (looksLikeName) {
           await fillField(resolvedName, payload.name, fillBehavior);
-          await captchaWatch.drain();
+          await captchaWatch.drain(2000);
         }
       }
 
       await fillField(resolvedPhone, payload.phone, fillBehavior);
-      // Phone input often triggers SmartCaptcha / reCAPTCHA / hCaptcha.
-      await captchaWatch.drain();
+      // Phone input often triggers SmartCaptcha 1–3s later — wait for widget + solve.
+      await captchaWatch.drain(15000);
 
       // Promo/action popup may appear while typing — always act inside the topmost lead form.
       let activeRoot = formRoot;
@@ -328,7 +376,7 @@ export async function submitLead(payload: SubmitLeadPayload): Promise<void> {
         }
 
         await fillField(activeFields.phone, payload.phone, fillBehavior);
-        await captchaWatch.drain();
+        await captchaWatch.drain(8000);
       }
 
       await ensureConsentInForm(
@@ -336,7 +384,7 @@ export async function submitLead(payload: SubmitLeadPayload): Promise<void> {
         payload.mapping.consent_checkbox_selector,
         payload.mapping.consent_checkbox_selectors,
       );
-      await captchaWatch.drain();
+      await captchaWatch.drain(3000);
 
       // Re-check again before submit (popup can appear after consent too).
       const retargetBeforeSubmit = await ensureActiveLeadFormRoot(
@@ -366,7 +414,7 @@ export async function submitLead(payload: SubmitLeadPayload): Promise<void> {
 
       // Final guard: mask plugins often drop a digit — never click submit until phone is complete.
       await ensurePhoneFullyFilled(activeFields.phone, payload.phone);
-      await captchaWatch.drain();
+      await captchaWatch.drain(3000);
       await page.waitForTimeout(400);
 
       const initialUrl = page.url();
@@ -421,49 +469,83 @@ export async function submitLead(payload: SubmitLeadPayload): Promise<void> {
         });
 
         await page.waitForLoadState('domcontentloaded').catch(() => undefined);
-        await page.waitForTimeout(1500);
+        await page.waitForTimeout(800);
 
         try {
-          await captchaWatch.drain();
+          const pageLooksSuccessful = async (): Promise<boolean> => {
+            return page.evaluate(() => {
+              const text = (document.body?.innerText || '').replace(/\s+/g, ' ');
+              return /успешно\s+отправлен|заявка\s+отправлен|спасибо|мы\s+свяжемся|принято/i.test(text);
+            }).catch(() => false);
+          };
 
-          // After captcha / another popup — retarget again and submit inside it.
-          const retargetAfterCaptcha = await ensureActiveLeadFormRoot(
-            page,
-            activeRoot,
-            payload.mapping.form_scope_selector,
-          );
-          activeRoot = retargetAfterCaptcha.formRoot;
-          activeFields = await resolveLeadFieldsInRoot(page, {
-            ...payload.mapping,
-            phone_selector: payload.mapping.phone_selector,
-            submit_selector: payload.mapping.submit_selector,
-            name_selector: payload.mapping.name_selector,
-            form_scope_selector: payload.mapping.form_scope_selector,
-            iframe_selector: payload.mapping.iframe_selector,
-          }, activeRoot);
-
-          const captchaAfterSubmit = await resolveCaptcha(page, activeRoot, captchaConfig, {
-            appearTimeoutMs: 5000,
-            phase: 'post-submit',
-            allowBlindTokenSolve: false,
-          });
-
-          if (captchaAfterSubmit || captchaWatch.wasSolved() || retargetAfterCaptcha.switchedToModal) {
-            captchaSolvedAfterSubmit = true;
-            if (retargetAfterCaptcha.switchedToModal) {
-              await ensurePhoneFullyFilled(activeFields.phone, payload.phone).catch(() => undefined);
+          if (await pageLooksSuccessful()) {
+            logger.info('Success text already on page after submit — skip post-submit captcha/retarget');
+          } else {
+            // Name maxlength validation (e.g. «не длиннее 15 символов») — keep phone/captcha, shorten name, resubmit.
+            const nameTooLong = await detectNameTooLongValidation(page, activeRoot);
+            if (nameTooLong.matched && (await activeFields.name.count()) > 0) {
+              const shortName = firstNameOnly(payload.name);
+              logger.warn(
+                { message: nameTooLong.message, maxHint: nameTooLong.maxHint, shortName },
+                'Name too long validation — retrying with first name only',
+              );
+              await fillField(activeFields.name, shortName, fillBehavior);
+              await page.waitForTimeout(400);
+              await clickVisible(activeFields.submit).catch(() => undefined);
+              await page.waitForLoadState('domcontentloaded').catch(() => undefined);
+              await page.waitForTimeout(800);
             }
-            logger.info('Captcha/modal after submit — clicking submit inside active form');
-            await clickVisible(activeFields.submit).catch(() => undefined);
-            await page.waitForLoadState('domcontentloaded').catch(() => undefined);
-            await captchaWatch.drain();
-            await page.waitForTimeout(2500);
+
+            if (!(await pageLooksSuccessful())) {
+              await captchaWatch.drain(1500);
+
+              // Skip blind post-submit captcha re-solve when already solved before submit
+              // (stale AdvancedCaptcha/image shell must not burn another RuCaptcha round).
+              if (!captchaWatch.wasSolved()) {
+                const captchaAfterSubmit = await resolveCaptcha(page, activeRoot, captchaConfig, {
+                  appearTimeoutMs: 2500,
+                  phase: 'post-submit',
+                  allowBlindTokenSolve: false,
+                });
+
+                if (captchaAfterSubmit && !(await pageLooksSuccessful())) {
+                  captchaSolvedAfterSubmit = true;
+                  const retargetAfterCaptcha = await ensureActiveLeadFormRoot(
+                    page,
+                    activeRoot,
+                    payload.mapping.form_scope_selector,
+                  );
+                  activeRoot = retargetAfterCaptcha.formRoot;
+                  activeFields = await resolveLeadFieldsInRoot(page, {
+                    ...payload.mapping,
+                    phone_selector: payload.mapping.phone_selector,
+                    submit_selector: payload.mapping.submit_selector,
+                    name_selector: payload.mapping.name_selector,
+                    form_scope_selector: payload.mapping.form_scope_selector,
+                    iframe_selector: payload.mapping.iframe_selector,
+                  }, activeRoot);
+
+                  if (retargetAfterCaptcha.switchedToModal) {
+                    await ensurePhoneFullyFilled(activeFields.phone, payload.phone).catch(() => undefined);
+                  }
+
+                  logger.info('Captcha after submit — clicking submit inside active form');
+                  await clickVisible(activeFields.submit).catch(() => undefined);
+                  await page.waitForLoadState('domcontentloaded').catch(() => undefined);
+                  await captchaWatch.drain(1500);
+                  await page.waitForTimeout(800);
+                }
+              } else {
+                logger.info('Captcha already solved before submit — skip post-submit resolve');
+              }
+            }
           }
         } catch (captchaError) {
           logger.warn({ err: captchaError }, 'Post-submit captcha handling failed — still detecting result');
         }
 
-        await page.waitForTimeout(payload.mapping.wait_after_submit_ms ?? 3000);
+        await page.waitForTimeout(payload.mapping.wait_after_submit_ms ?? 1500);
         mutationSummary = await mutationPromise;
       } finally {
         page.off('console', onConsole);

@@ -8,6 +8,7 @@ use App\Services\YandexAdsDiscoveryService;
 use Filament\Actions\Action;
 use Filament\Forms\Components\Select;
 use Filament\Forms\Components\TextInput;
+use Filament\Forms\Components\Toggle;
 use Filament\Notifications\Notification;
 use Throwable;
 use Filament\Resources\Pages\ListRecords;
@@ -33,8 +34,8 @@ class ListDiscoveryRuns extends ListRecords
                 ->label('Сканировать Яндекс Promo')
                 ->icon('heroicon-o-play')
                 ->color('success')
-                ->modalHeading('Поиск рекламы в Яндексе')
-                ->modalDescription('Бот откроет yandex.ru, выполнит поисковый запрос и соберёт сайты из блоков «Промо» на указанных страницах выдачи.')
+                ->modalHeading('Поиск в Яндексе')
+                ->modalDescription('Бот откроет yandex.ru, выполнит поисковый запрос и соберёт сайты с указанных страниц выдачи.')
                 ->modalSubmitActionLabel('Запустить')
                 ->form([
                     Select::make('region_id')
@@ -69,6 +70,10 @@ class ListDiscoveryRuns extends ListRecords
                         ->maxValue(5)
                         ->default(3)
                         ->required(),
+                    Toggle::make('only_promo')
+                        ->label('Только промо')
+                        ->helperText('Вкл: только рекламные блоки «Промо/Реклама». Выкл: вся выдача — реклама и органика.')
+                        ->default(true),
                 ])
                 ->action(function (array $data): void {
                     $region = Region::query()->findOrFail((int) $data['region_id']);
@@ -79,6 +84,7 @@ class ListDiscoveryRuns extends ListRecords
                             (int) ($data['max_pages'] ?? 3),
                             true,
                             is_string($data['query'] ?? null) ? $data['query'] : null,
+                            filter_var($data['only_promo'] ?? true, FILTER_VALIDATE_BOOLEAN),
                         );
                     } catch (Throwable $e) {
                         Notification::make()
@@ -90,9 +96,10 @@ class ListDiscoveryRuns extends ListRecords
                         return;
                     }
 
+                    $mode = ($data['only_promo'] ?? true) ? 'только промо' : 'вся выдача';
                     Notification::make()
                         ->title('Скан поставлен в очередь')
-                        ->body("Прогон #{$result['run']->id}, задача #{$result['task']->id}. Запрос: {$result['run']->query}")
+                        ->body("Прогон #{$result['run']->id}, задача #{$result['task']->id}. Режим: {$mode}. Запрос: {$result['run']->query}")
                         ->success()
                         ->send();
                 }),

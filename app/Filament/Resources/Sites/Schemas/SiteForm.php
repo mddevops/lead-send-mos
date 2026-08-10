@@ -6,6 +6,7 @@ use Filament\Forms\Components\DateTimePicker;
 use Filament\Forms\Components\Select;
 use Filament\Forms\Components\TextInput;
 use Filament\Forms\Components\Textarea;
+use Filament\Forms\Components\Toggle;
 use Filament\Schemas\Schema;
 
 class SiteForm
@@ -65,6 +66,10 @@ class SiteForm
         ])
                     ->default('new')
                     ->required(),
+                Toggle::make('is_promo')
+                    ->label('Промо (реклама)')
+                    ->helperText('Сайт из рекламного блока Яндекса. Выкл — органика.')
+                    ->default(true),
                 Textarea::make('notes')
                     ->label('Заметки')
                     ->columnSpanFull(),

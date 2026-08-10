@@ -48,56 +48,64 @@ export async function observeDomMutations(
 
         const samples: string[] = [];
 
-        await new Promise<void>((resolve) => {
-          const observer = new MutationObserver((mutations) => {
-            for (const mutation of mutations) {
-              if (mutation.type === 'childList') {
-                summary.childList += 1;
-                summary.addedNodes += mutation.addedNodes.length;
+          const deadline = Date.now() + waitMs;
+          await new Promise<void>((resolve) => {
+            const finish = () => {
+              observer.disconnect();
+              summary.sampleText = samples.slice(0, 3).join(' | ').slice(0, 400);
+              resolve();
+            };
 
-                for (const node of mutation.addedNodes) {
-                  if (!(node instanceof HTMLElement)) {
-                    continue;
-                  }
+            const observer = new MutationObserver((mutations) => {
+              for (const mutation of mutations) {
+                if (mutation.type === 'childList') {
+                  summary.childList += 1;
+                  summary.addedNodes += mutation.addedNodes.length;
 
-                  const cls = typeof node.className === 'string' ? node.className : '';
-                  if (/modal|popup|dialog|toast|alert|success|уведомл/i.test(cls) || node.getAttribute('role') === 'dialog') {
-                    summary.sawModalHint = true;
-                  }
+                  for (const node of mutation.addedNodes) {
+                    if (!(node instanceof HTMLElement)) {
+                      continue;
+                    }
 
-                  const text = (node.innerText || node.textContent || '').replace(/\s+/g, ' ').trim();
-                  if (text && text.length < 240) {
-                    samples.push(text);
-                    if (successRe && successRe.test(text)) {
-                      summary.sawSuccessHint = true;
+                    const cls = typeof node.className === 'string' ? node.className : '';
+                    if (/modal|popup|dialog|toast|alert|success|уведомл/i.test(cls) || node.getAttribute('role') === 'dialog') {
+                      summary.sawModalHint = true;
+                    }
+
+                    const text = (node.innerText || node.textContent || '').replace(/\s+/g, ' ').trim();
+                    if (text && text.length < 240) {
+                      samples.push(text);
+                      if (successRe && successRe.test(text)) {
+                        summary.sawSuccessHint = true;
+                      }
                     }
                   }
                 }
-              }
 
-              if (mutation.type === 'characterData') {
-                summary.characterData += 1;
-                const text = (mutation.target.textContent || '').replace(/\s+/g, ' ').trim();
-                if (text && successRe && successRe.test(text)) {
-                  summary.sawSuccessHint = true;
-                  samples.push(text.slice(0, 120));
+                if (mutation.type === 'characterData') {
+                  summary.characterData += 1;
+                  const text = (mutation.target.textContent || '').replace(/\s+/g, ' ').trim();
+                  if (text && successRe && successRe.test(text)) {
+                    summary.sawSuccessHint = true;
+                    samples.push(text.slice(0, 120));
+                  }
                 }
               }
-            }
-          });
 
-          observer.observe(document.documentElement, {
-            childList: true,
-            subtree: true,
-            characterData: true,
-          });
+              // Stop early once success is visible — don't burn the full wait window.
+              if (summary.sawSuccessHint) {
+                finish();
+              }
+            });
 
-          window.setTimeout(() => {
-            observer.disconnect();
-            summary.sampleText = samples.slice(0, 3).join(' | ').slice(0, 400);
-            resolve();
-          }, waitMs);
-        });
+            observer.observe(document.documentElement, {
+              childList: true,
+              subtree: true,
+              characterData: true,
+            });
+
+            window.setTimeout(finish, Math.max(0, deadline - Date.now()));
+          });
 
         return summary;
       },

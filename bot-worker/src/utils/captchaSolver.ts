@@ -4,8 +4,8 @@ import { runtimeConfig as config } from '../runtimeConfig';
 
 const logger = pino({ name: 'captcha-solver' });
 
-const POLL_INTERVAL_MS = 5000;
-const MAX_POLL_ATTEMPTS = 30;
+const POLL_INTERVAL_MS = 2500;
+const MAX_POLL_ATTEMPTS = 36;
 
 export type CaptchaSolverProvider = '2captcha' | 'rucaptcha';
 

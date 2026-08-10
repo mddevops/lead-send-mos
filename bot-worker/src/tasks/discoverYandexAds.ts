@@ -17,6 +17,8 @@ type DiscoverYandexAdsPayload = {
   regionName: string;
   query: string;
   maxPages?: number;
+  /** Default true: only Промо/Реклама. false = promo + organic. */
+  onlyPromo?: boolean;
   proxy?: ProxyConfig | null;
 };
 
@@ -29,10 +31,24 @@ type PromoItem = {
   yandex_url: string | null;
   title: string | null;
   snippet: string | null;
+  /** true = Промо/Реклама block, false = organic SERP result */
+  is_promo: boolean;
 };
 
 function randomInt(min: number, max: number): number {
   return Math.floor(Math.random() * (max - min + 1)) + min;
+}
+
+/** Default true. Accept bool / 0|1 / "false"|"true" from Laravel JSON. */
+function resolveOnlyPromoFlag(value: unknown): boolean {
+  if (value === false || value === 0 || value === '0' || value === 'false') {
+    return false;
+  }
+  if (value === true || value === 1 || value === '1' || value === 'true') {
+    return true;
+  }
+
+  return true;
 }
 
 async function humanPause(page: Page, minMs: number, maxMs: number): Promise<void> {
@@ -42,6 +58,7 @@ async function humanPause(page: Page, minMs: number, maxMs: number): Promise<voi
 export async function discoverYandexAds(payload: DiscoverYandexAdsPayload): Promise<void> {
   const maxPages = Math.max(1, Math.min(5, payload.maxPages ?? 3));
   const query = payload.query?.trim() || `Купить авто в ${payload.regionName}`;
+  const onlyPromo = resolveOnlyPromoFlag(payload.onlyPromo);
 
   logger.info(
     {
@@ -49,6 +66,7 @@ export async function discoverYandexAds(payload: DiscoverYandexAdsPayload): Prom
       regionId: payload.regionId,
       query,
       maxPages,
+      onlyPromo,
       hasProxy: Boolean(payload.proxy),
     },
     'Starting Yandex Promo discovery',
@@ -58,18 +76,23 @@ export async function discoverYandexAds(payload: DiscoverYandexAdsPayload): Prom
     throw new Error('proxy_required_but_not_available');
   }
 
-  // Prefer real-Chrome headed session; Yandex fingerprints headless/proxy datacenter hard.
   // Cookies after captcha live in storage/yandex-cookies (per proxy) so Yandex asks less often.
+  // headless follows BOT_HEADLESS (false locally for debug, true on production).
   const proxyId = payload.proxy?.id ?? null;
   const storageState = loadYandexStorageState(proxyId);
   logger.info(
-    { cookiesDir: yandexCookiesDir(), proxyId, hasStorageState: Boolean(storageState) },
+    {
+      cookiesDir: yandexCookiesDir(),
+      proxyId,
+      hasStorageState: Boolean(storageState),
+      headless: config.BOT_HEADLESS,
+    },
     'Yandex cookie jar',
   );
 
   const session = await openBrowser(buildProxyServer(payload.proxy), {
     desktopFullScreen: true,
-    headless: false,
+    headless: config.BOT_HEADLESS,
     storageState,
   });
   const page = await session.context.newPage();
@@ -141,6 +164,22 @@ export async function discoverYandexAds(payload: DiscoverYandexAdsPayload): Prom
           await page.waitForLoadState('domcontentloaded').catch(() => undefined);
           await humanPause(page, 2000, 4000);
         } else {
+          // Homepage search often omits lr — force region on first SERP page.
+          const lr = regionLrFromName(payload.regionName);
+          if (lr) {
+            try {
+              const current = new URL(page.url());
+              if (/\/search/i.test(current.pathname) && current.searchParams.get('lr') !== lr) {
+                current.searchParams.set('text', query);
+                current.searchParams.set('lr', lr);
+                current.searchParams.delete('p');
+                await page.goto(current.toString(), { waitUntil: 'domcontentloaded', timeout: 60000 });
+                await humanPause(page, 1500, 2800);
+              }
+            } catch {
+              // keep current SERP
+            }
+          }
           await humanPause(page, 1200, 2800);
         }
 
@@ -152,14 +191,22 @@ export async function discoverYandexAds(payload: DiscoverYandexAdsPayload): Prom
         }
 
         await revealSerpCarousels(page);
-        const pageItems = await collectPromoItems(page);
+        const pageItems = await collectSerpItems(page, onlyPromo);
         for (const item of pageItems) {
           // Cross-page dedupe by hostname; yabs-only cards kept until unwrap.
           const key =
             normalizeHostKey(item.url) ||
             normalizeHostKey(item.destination_url || '') ||
             (item.yandex_url ? `yabs:${item.yandex_url.slice(0, 120)}` : null);
-          if (!key || collected.has(key)) {
+          if (!key) {
+            continue;
+          }
+          const existing = collected.get(key);
+          if (existing) {
+            // Prefer promo if the same domain appears as both.
+            if (item.is_promo && !existing.is_promo) {
+              collected.set(key, { ...existing, ...item, is_promo: true });
+            }
             continue;
           }
           collected.set(key, item);
@@ -169,19 +216,23 @@ export async function discoverYandexAds(payload: DiscoverYandexAdsPayload): Prom
           {
             page: pagesScanned,
             p: pageOffset > 0 ? pageOffset : 0,
+            onlyPromo,
             foundOnPage: pageItems.length,
+            promoOnPage: pageItems.filter((i) => i.is_promo).length,
+            organicOnPage: pageItems.filter((i) => !i.is_promo).length,
             withCleanUrl: pageItems.filter((i) => Boolean(normalizeHostKey(i.url))).length,
             withYabs: pageItems.filter((i) => Boolean(i.yandex_url)).length,
             totalUnique: collected.size,
             sample: pageItems.slice(0, 3).map((i) => ({
               url: i.url || null,
+              promo: i.is_promo,
               dest: i.destination_url ? i.destination_url.slice(0, 80) : null,
               yabs: Boolean(i.yandex_url),
               title: i.title?.slice(0, 40) || null,
             })),
           },
           pageItems.length === 0
-            ? 'No Promo blocks on this SERP page — continuing'
+            ? 'No SERP sites on this page — continuing'
             : 'Yandex SERP page scanned',
         );
       }
@@ -231,6 +282,7 @@ export async function discoverYandexAds(payload: DiscoverYandexAdsPayload): Prom
         url: origin,
         destination_url: adLanding,
         yandex_url: yandexUrl,
+        is_promo: Boolean(item.is_promo),
       });
     }
 
@@ -251,6 +303,7 @@ export async function discoverYandexAds(payload: DiscoverYandexAdsPayload): Prom
         yandex_url: item.yandex_url,
         title: item.title,
         snippet: item.snippet,
+        is_promo: Boolean(item.is_promo),
       }))
       .filter((item) => item.url !== '');
 
@@ -285,6 +338,7 @@ export async function discoverYandexAds(payload: DiscoverYandexAdsPayload): Prom
         yandex_url: item.yandex_url,
         title: item.title,
         snippet: item.snippet,
+        is_promo: Boolean(item.is_promo),
       }))
       .filter((item) => item.url !== '');
     await sendDiscoveryRunResult(payload.discoveryRunId, {
@@ -618,7 +672,7 @@ async function isYandexBlocked(page: Page): Promise<boolean> {
   }
 }
 
-async function collectPromoItems(page: Page): Promise<PromoItem[]> {
+async function collectSerpItems(page: Page, onlyPromo: boolean): Promise<PromoItem[]> {
   await page.waitForLoadState('domcontentloaded', { timeout: 10000 }).catch(() => undefined);
   // Wait for SERP list if present.
   await page.waitForSelector('#search-result, ul.serp-list, ul[aria-label*="Результат" i]', {
@@ -627,7 +681,7 @@ async function collectPromoItems(page: Page): Promise<PromoItem[]> {
 
   for (let attempt = 1; attempt <= 3; attempt += 1) {
     try {
-      return await page.evaluate(() => {
+      return await page.evaluate((promoOnly: boolean) => {
     const SKIP_HOSTS = new Set([
       'yandex.ru',
       'ya.ru',
@@ -684,16 +738,58 @@ async function collectPromoItems(page: Page): Promise<PromoItem[]> {
       return toOrigin(href) !== null;
     }
 
-    /** Top carousel / horizontal scroller — skip entirely (class names change often). */
+    /**
+     * Organic title links are usually https://yandex.ru/clck/jsredir?...&u=https%3A%2F%2Fsite.ru%2F
+     * Decode the real landing host from redirect params.
+     */
+    function extractFromYandexRedirect(href: string): string | null {
+      try {
+        const u = new URL(href, location.href);
+        if (!/yandex\.|ya\.ru/i.test(u.hostname)) return null;
+
+        for (const key of ['u', 'url', 'target', 'to']) {
+          const raw = u.searchParams.get(key);
+          if (!raw) continue;
+          const candidates = [raw];
+          try {
+            candidates.push(decodeURIComponent(raw));
+          } catch {
+            // ignore
+          }
+          for (const c of candidates) {
+            const origin = toOrigin(c.startsWith('http') ? c : `https://${c}`);
+            if (origin) return origin;
+          }
+        }
+
+        // Fallback: encoded https://host inside the query blob.
+        const encoded = href.match(/https?%3A%2F%2F([a-z0-9][a-z0-9.-]*[a-z0-9]\.[a-z]{2,})/i);
+        if (encoded) {
+          const host = sanitizeHost(encoded[1]);
+          if (host) return `https://${host}`;
+        }
+      } catch {
+        // ignore
+      }
+      return null;
+    }
+
+    /**
+     * Nested promo carousel only — stop at #search-result.
+     * Older logic walked past the SERP list into page "Scroller" wrappers and
+     * skipped EVERY organic LI (only carousel promo tiles survived).
+     */
     function isInsideCarousel(el: Element): boolean {
+      const list = getSerpList();
       let node: Element | null = el;
       while (node && node !== document.body) {
+        if (list && node === list) return false;
         const cls = typeof (node as HTMLElement).className === 'string'
           ? (node as HTMLElement).className
           : '';
-        if (/scroller/i.test(cls)) return true;
         const role = node.getAttribute('aria-roledescription') || '';
         if (/carousel|карусел/i.test(role)) return true;
+        if (/scroller/i.test(cls)) return true;
         node = node.parentElement;
       }
       return false;
@@ -746,18 +842,24 @@ async function collectPromoItems(page: Page): Promise<PromoItem[]> {
     function extractDomainFallback(card: Element): string | null {
       const candidates: string[] = [];
 
-      for (const el of card.querySelectorAll('a, b, span, cite')) {
+      for (const el of card.querySelectorAll(
+        'a, b, span, cite, [class*="Path"], [class*="path"], [class*="OrganicText"], [class*="organicText"]',
+      )) {
         const text = (el.textContent || '').replace(/\s+/g, ' ').trim();
-        if (!text || text.length > 160) continue;
-        if (/\.[a-z]{2,}/i.test(text) || /[›»]/.test(text) || /^(?:www\.)?[a-z0-9-]+\.[a-z]{2,}/i.test(text)) {
+        if (!text || text.length > 200) continue;
+        if (
+          /\.[a-z]{2,}/i.test(text)
+          || /[›»▸]/.test(text)
+          || /^(?:www\.)?[a-z0-9-]+\.[a-z]{2,}/i.test(text)
+        ) {
           candidates.push(text);
         }
       }
 
-      // Full card text sometimes has "example.ru › …" once.
+      // Full card text: "example.ru › …" or "example.ru / path"
       const blob = (card.textContent || '').replace(/\s+/g, ' ').trim();
       const pathMatch = blob.match(
-        /((?:www\.)?[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+)\s*[›»]/i,
+        /((?:www\.)?[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+)\s*(?:[›»▸]|\/)/i,
       );
       if (pathMatch) candidates.unshift(pathMatch[1]);
 
@@ -766,20 +868,46 @@ async function collectPromoItems(page: Page): Promise<PromoItem[]> {
         if (host) return `https://${host}`;
       }
 
+      // Last resort: decode organic clck/jsredir targets.
+      for (const a of card.querySelectorAll('a[href]')) {
+        const fromClck = extractFromYandexRedirect((a as HTMLAnchorElement).href);
+        if (fromClck) return fromClck;
+      }
+
       return null;
     }
 
     function isPromoCard(card: Element): boolean {
-      // Label text «Промо» / «Реклама» — do not depend on specific class names.
-      if (card.querySelector('.AdvLabel, .OrganicAdvLabel, [class*="AdvLabel"]')) {
+      // Strict labels only — do NOT scan full card text (organic snippets often contain «реклама»).
+      if (card.querySelector('.AdvLabel, .OrganicAdvLabel, [class*="AdvLabel"], [class*="Label_type_adv" i]')) {
         return true;
       }
-      for (const el of card.querySelectorAll('span, div, a')) {
+      for (const el of card.querySelectorAll('span, div, a, label')) {
         const t = (el.textContent || '').replace(/\s+/g, ' ').trim();
+        if (t.length > 24) continue;
         if (/^(Промо|Реклама)$/i.test(t)) return true;
       }
-      const head = (card.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 500);
-      return /\bПромо\b|\bРеклама\b/i.test(head);
+      // Label usually sits at the very start of the card.
+      const head = (card.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 48);
+      return /^(Промо|Реклама)\b/i.test(head);
+    }
+
+    function cardHasExternalSite(card: Element): boolean {
+      if (extractDomainFallback(card) || extractSnippetUrl(card)) return true;
+      return Array.from(card.querySelectorAll('a[href]')).some((a) => {
+        const href = (a as HTMLAnchorElement).href;
+        return isExternalSiteUrl(href) || Boolean(extractFromYandexRedirect(href));
+      });
+    }
+
+    function isLikelyOrganicResult(card: Element): boolean {
+      if (isPromoCard(card)) return false;
+      if (isCarouselShell(card) || isInsideCarousel(card)) return false;
+      if (!cardHasExternalSite(card)) return false;
+      const text = (card.textContent || '').replace(/\s+/g, ' ').trim();
+      // Skip tiny widgets / empty shells.
+      if (text.length < 20) return false;
+      return true;
     }
 
     function isCarouselShell(el: Element): boolean {
@@ -845,34 +973,62 @@ async function collectPromoItems(page: Page): Promise<PromoItem[]> {
     }
 
     const list = getSerpList();
-    const cards: Element[] = [];
+    const cards: Array<{ el: Element; isPromo: boolean }> = [];
     const seenCards = new Set<Element>();
 
+    function pushCard(el: Element, isPromo: boolean): void {
+      if (seenCards.has(el)) return;
+      seenCards.add(el);
+      cards.push({ el, isPromo });
+    }
+
     if (list) {
-      // Main SERP: direct li children with Промо/Реклама (skip carousel shells — handled separately).
+      // Main SERP: direct li children (promo and optionally organic).
       for (const child of Array.from(list.children)) {
         if (!(child instanceof HTMLElement) || child.tagName !== 'LI') continue;
         if (isCarouselShell(child) || isInsideCarousel(child)) continue;
-        if (!isPromoCard(child)) continue;
-        seenCards.add(child);
-        cards.push(child);
+        const promo = isPromoCard(child);
+        if (promoOnly && !promo) continue;
+        if (!promo && !isLikelyOrganicResult(child)) continue;
+        pushCard(child, promo);
+      }
+
+      // Organic often nests deeper than direct children — second pass when collecting all.
+      if (!promoOnly) {
+        const organicNodes = list.querySelectorAll(
+          ':scope > li, li[data-cid], li.serp-item, [class*="Organic"], [class*="organic"]',
+        );
+        for (const node of organicNodes) {
+          if (!(node instanceof HTMLElement)) continue;
+          if (isCarouselShell(node) || isInsideCarousel(node)) continue;
+          const outer =
+            node.closest('#search-result > li, ul.serp-list > li, ul[aria-label] > li') || node;
+          if (!(outer instanceof Element)) continue;
+          if (isCarouselShell(outer) || isInsideCarousel(outer)) continue;
+          if (isPromoCard(outer) || isPromoCard(node)) {
+            pushCard(outer, true);
+            continue;
+          }
+          if (!isLikelyOrganicResult(outer) && !isLikelyOrganicResult(node)) continue;
+          if (seenCards.has(outer)) continue;
+          pushCard(outer, false);
+        }
       }
     }
 
     for (const card of collectCarouselCards()) {
-      if (seenCards.has(card)) continue;
-      seenCards.add(card);
-      cards.push(card);
+      // Carousel tiles are treated as promo ads.
+      pushCard(card, true);
     }
 
-    // Fallback if #search-result missing: any li that looks like a result card.
+    // Fallback if #search-result missing.
     if (cards.length === 0) {
       for (const node of document.querySelectorAll('li[data-cid], li.serp-item, li')) {
         if (!node.closest('ul')) continue;
-        if (!isPromoCard(node) && !extractYandexUrl(node)) continue;
-        if (seenCards.has(node)) continue;
-        seenCards.add(node);
-        cards.push(node);
+        const promo = isPromoCard(node) || Boolean(extractYandexUrl(node));
+        if (promoOnly && !promo) continue;
+        if (!promo && !isLikelyOrganicResult(node)) continue;
+        pushCard(node, promo);
       }
     }
 
@@ -882,10 +1038,11 @@ async function collectPromoItems(page: Page): Promise<PromoItem[]> {
       yandex_url: string | null;
       title: string | null;
       snippet: string | null;
+      is_promo: boolean;
     }> = [];
     const seen = new Set<string>();
 
-    for (const card of cards) {
+    for (const { el: card, isPromo } of cards) {
       const titleEl = card.querySelector('h2');
       let title = (titleEl?.textContent || '').replace(/\s+/g, ' ').trim() || null;
       if (title) title = title.replace(/^(Промо|Реклама)\s+/i, '').trim() || null;
@@ -911,7 +1068,7 @@ async function collectPromoItems(page: Page): Promise<PromoItem[]> {
       if (!cleanUrl) {
         for (const a of card.querySelectorAll('a[href]')) {
           const href = (a as HTMLAnchorElement).href;
-          const origin = toOrigin(href);
+          const origin = toOrigin(href) || extractFromYandexRedirect(href);
           if (origin) {
             cleanUrl = origin;
             break;
@@ -933,14 +1090,15 @@ async function collectPromoItems(page: Page): Promise<PromoItem[]> {
         yandex_url: yandexUrl,
         title,
         snippet,
+        is_promo: isPromo,
       });
     }
 
     return items;
-      });
+      }, onlyPromo);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      logger.warn({ attempt, message }, 'collectPromoItems evaluate failed');
+      logger.warn({ attempt, message }, 'collectSerpItems evaluate failed');
       if (!/Execution context was destroyed|Target closed|Navigation/i.test(message) || attempt === 3) {
         return [];
       }
@@ -1014,6 +1172,7 @@ function regionLrFromName(regionName?: string): string | null {
   const map: Array<[RegExp, string]> = [
     [/москв/, '213'],
     [/санкт|питер|спб/, '2'],
+    [/волгоград/, '38'],
     [/краснодар/, '35'],
     [/сочи/, '239'],
     [/ростов/, '39'],

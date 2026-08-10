@@ -111,6 +111,7 @@ export async function sendDiscoveryRunResult(
       title?: string | null;
       snippet?: string | null;
       yandex_url?: string | null;
+      is_promo?: boolean;
     }>;
     pages_scanned?: number;
     blocked?: boolean;
