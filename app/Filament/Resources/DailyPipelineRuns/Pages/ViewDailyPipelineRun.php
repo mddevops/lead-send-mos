@@ -5,10 +5,17 @@ namespace App\Filament\Resources\DailyPipelineRuns\Pages;
 use App\Filament\Resources\DailyPipelineRuns\DailyPipelineRunResource;
 use App\Filament\Resources\Sites\Pages\ManualSiteMapping;
 use App\Filament\Resources\Sites\SiteResource;
+use App\Models\BotTask;
+use App\Models\Campaign;
+use App\Models\CampaignSiteRun;
 use App\Models\DailyPipelineRun;
+use App\Models\ProjectSetting;
 use App\Models\Site;
 use App\Services\DailyPipelineService;
+use App\Services\LeadIdentityGenerator;
 use App\Support\PipelineSitesExcelExport;
+use App\Support\ProxyPicker;
+use App\Support\SubmitLeadPayloadBuilder;
 use Filament\Actions\Action;
 use Filament\Actions\DeleteAction;
 use Filament\Forms\Components\Radio;
@@ -21,6 +28,7 @@ use Filament\Tables\Columns\TextColumn;
 use Filament\Tables\Concerns\InteractsWithTable;
 use Filament\Tables\Contracts\HasTable;
 use Filament\Tables\Table;
+use Illuminate\Support\Facades\Auth;
 use Symfony\Component\HttpFoundation\BinaryFileResponse;
 use Throwable;
 
@@ -164,6 +172,130 @@ class ViewDailyPipelineRun extends ViewRecord implements HasTable
                     ->label('Маппинг')
                     ->icon('heroicon-o-wrench-screwdriver')
                     ->url(fn (Site $record): string => ManualSiteMapping::getUrl(['record' => $record])),
+                \Filament\Actions\Action::make('test_submit')
+                    ->label('Проверить отправку')
+                    ->icon('heroicon-o-paper-airplane')
+                    ->color('success')
+                    ->modalHeading('Проверить отправку формы')
+                    ->modalDescription('Имя/фамилия и телефон подставятся автоматически: случайный пол из таблицы имён + номер из phone_grid региона сайта.')
+                    ->modalSubmitActionLabel('Проверить')
+                    ->requiresConfirmation()
+                    ->visible(fn (Site $record): bool => $record->status === 'ready'
+                        && $record->formMappings->isNotEmpty())
+                    ->action(function (Site $record): void {
+                        if ($record->status === 'disabled') {
+                            Notification::make()
+                                ->title('Сайт отключён')
+                                ->body('Включите сайт перед тестовой отправкой.')
+                                ->warning()
+                                ->send();
+
+                            return;
+                        }
+
+                        if ($record->status !== 'ready') {
+                            Notification::make()
+                                ->title('Сайт не готов')
+                                ->body('Сначала выполните сканирование или ручной маппинг.')
+                                ->warning()
+                                ->send();
+
+                            return;
+                        }
+
+                        $mapping = SubmitLeadPayloadBuilder::pickMapping($record);
+                        if (! $mapping) {
+                            Notification::make()
+                                ->title('Нет активного маппинга')
+                                ->body('Сначала настройте и активируйте маппинг формы.')
+                                ->warning()
+                                ->send();
+
+                            return;
+                        }
+
+                        try {
+                            $identity = app(LeadIdentityGenerator::class)->generateForSite($record);
+                        } catch (Throwable $e) {
+                            Notification::make()
+                                ->title('Не удалось сгенерировать имя/телефон')
+                                ->body($e->getMessage())
+                                ->danger()
+                                ->send();
+
+                            return;
+                        }
+
+                        $settings = ProjectSetting::query()->firstOrCreate([]);
+                        $proxy = ProxyPicker::pick();
+
+                        if ($proxy === null) {
+                            app(DailyPipelineService::class)->notifyNoProxy('Тестовая отправка не запущена (пайплайн).');
+
+                            Notification::make()
+                                ->title('Нет доступного proxy')
+                                ->body('Отправка без proxy не запускается.')
+                                ->danger()
+                                ->send();
+
+                            return;
+                        }
+
+                        $campaign = Campaign::query()->create([
+                            'name' => "Тест отправки: {$record->name}",
+                            'phone' => $identity['phone'],
+                            'source' => 'web',
+                            'status' => 'queued',
+                            'total_sites' => 1,
+                            'created_by' => Auth::id(),
+                        ]);
+
+                        $run = CampaignSiteRun::query()->create([
+                            'campaign_id' => $campaign->id,
+                            'site_id' => $record->id,
+                            'proxy_id' => $proxy->id,
+                            'status' => 'pending',
+                        ]);
+
+                        $task = BotTask::query()->create([
+                            'type' => 'submit_lead',
+                            'status' => 'queued',
+                            'campaign_site_run_id' => $run->id,
+                            'site_id' => $record->id,
+                            'payload' => [
+                                'taskId' => null,
+                                'runId' => $run->id,
+                                'url' => SubmitLeadPayloadBuilder::submitUrl($record, $mapping),
+                                'name' => $identity['name'],
+                                'phone' => $identity['phone'],
+                                'region' => SubmitLeadPayloadBuilder::regionArray($record),
+                                'screenshotConfig' => [
+                                    'enabled' => false,
+                                ],
+                                'mapping' => SubmitLeadPayloadBuilder::mappingArray($mapping),
+                                'proxy' => ProxyPicker::toPayload($proxy),
+                                'proxyConfig' => ProxyPicker::configFromSettings($settings),
+                            ],
+                        ]);
+
+                        $task->update([
+                            'payload' => [
+                                ...($task->payload ?? []),
+                                'taskId' => $task->id,
+                            ],
+                        ]);
+
+                        ProxyPicker::markUsed($proxy);
+
+                        $operator = $identity['operator'] ? ", {$identity['operator']}" : '';
+                        $region = $identity['region'] ?? '—';
+
+                        Notification::make()
+                            ->title("Тестовая отправка поставлена в очередь (#{$task->id})")
+                            ->body("{$identity['gender']}: {$identity['name']}, тел. {$identity['phone']} ({$region}{$operator})")
+                            ->success()
+                            ->send();
+                    }),
             ])
             ->paginated([25, 50, 100])
             ->defaultPaginationPageOption(25)
