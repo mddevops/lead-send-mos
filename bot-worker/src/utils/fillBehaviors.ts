@@ -1,5 +1,4 @@
 import { Locator } from 'playwright';
-import { humanClickLocator } from './humanMouse';
 
 export const FILL_BEHAVIOR_IDS = [
   'typo_backspace',
@@ -160,7 +159,7 @@ export async function typeWithBehavior(
 export async function prepareFieldForTyping(locator: Locator): Promise<void> {
   await locator.scrollIntoViewIfNeeded();
   await pause(locator, 350, 900);
-  await humanClickLocator(locator, { force: true, timeoutMs: 10000 });
+  await locator.click({ timeout: 10000, force: true });
   await pause(locator, 400, 1000);
   await clearField(locator);
 }
