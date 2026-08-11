@@ -1,6 +1,7 @@
 import { Locator, Page } from 'playwright';
 import pino from 'pino';
 import { FillBehaviorId, prepareFieldForTyping, typeWithBehavior } from './fillBehaviors';
+import { humanClickLocator } from './humanMouse';
 
 const logger = pino({ name: 'form-interactions' });
 
@@ -1118,7 +1119,7 @@ export async function clickVisible(locator: Locator): Promise<void> {
   await target.waitFor({ state: 'visible', timeout: 20000 });
   await target.scrollIntoViewIfNeeded();
   await humanPause(target, 350, 900);
-  await target.click({ timeout: 10000, force: true });
+  await humanClickLocator(target, { force: true, timeoutMs: 10000 });
   await humanPause(target, 280, 700);
 }
 
@@ -1199,7 +1200,7 @@ export async function ensureConsentChecked(locator: Locator): Promise<void> {
       .catch(() => false);
 
     if (!checked) {
-      await consent.click({ timeout: 5000, force: true }).catch(() => undefined);
+      await humanClickLocator(consent, { force: true, timeoutMs: 5000 }).catch(() => undefined);
     }
     return;
   }
@@ -1226,7 +1227,7 @@ export async function ensureConsentChecked(locator: Locator): Promise<void> {
     .catch(() => false);
 
   if (!alreadyChecked) {
-    await consent.click({ timeout: 5000, force: true }).catch(() => undefined);
+    await humanClickLocator(consent, { force: true, timeoutMs: 5000 }).catch(() => undefined);
   }
 }
 
