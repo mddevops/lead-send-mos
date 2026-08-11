@@ -12,6 +12,8 @@ type ScanFormPayload = {
   siteId: number;
   url: string;
   maxFormMappings?: number;
+  healRemap?: boolean;
+  excludeFingerprints?: string[];
   proxy?: ProxyConfig | null;
   proxyConfig?: {
     rotate_before_each_site?: boolean;
@@ -19,6 +21,22 @@ type ScanFormPayload = {
     proxy_change_ip_timeout_ms?: number;
   };
 };
+
+function formExcludeKey(form: {
+  source_url?: string | null;
+  open_modal_selector?: string | null;
+  form_scope_selector?: string | null;
+  phone_selector?: string | null;
+  submit_selector?: string | null;
+}): string {
+  return [
+    (form.source_url ?? '').trim().toLowerCase(),
+    (form.open_modal_selector ?? '').trim().toLowerCase(),
+    (form.form_scope_selector ?? '').trim().toLowerCase(),
+    (form.phone_selector ?? '').trim().toLowerCase(),
+    (form.submit_selector ?? '').trim().toLowerCase(),
+  ].join('|');
+}
 
 export async function scanForm(payload: ScanFormPayload): Promise<void> {
   if (!payload.proxy) {
@@ -57,24 +75,50 @@ export async function scanForm(payload: ScanFormPayload): Promise<void> {
 
   try {
     const maxFormMappings = payload.maxFormMappings;
+    const exclude = new Set(
+      (payload.excludeFingerprints ?? [])
+        .map((v) => String(v).trim().toLowerCase())
+        .filter(Boolean),
+    );
+
     const { forms: detectedForms, diagnostics } = await scanSiteForForms(page, payload.url, {
       maxForms: maxFormMappings,
-      maxPages: 16,
+      maxPages: payload.healRemap ? 24 : 16,
       discoverModals: true,
       oneMappingPerPage: true,
     });
-    foundForms = detectedForms.length;
+
+    let formsToSave = detectedForms;
+    if (exclude.size > 0) {
+      formsToSave = detectedForms.filter((form) => {
+        const key = formExcludeKey(form);
+        const hit = exclude.has(key);
+        if (hit) {
+          logger.info(
+            { siteId: payload.siteId, fingerprint: key.slice(0, 160) },
+            'Heal remap: skipping previously failing form fingerprint',
+          );
+        }
+
+        return !hit;
+      });
+    }
+
+    foundForms = formsToSave.length;
 
     logger.info(
       {
         siteId: payload.siteId,
         foundForms,
+        detectedTotal: detectedForms.length,
+        excluded: detectedForms.length - formsToSave.length,
+        healRemap: Boolean(payload.healRemap),
         diagnostics,
       },
       'Form scan finished',
     );
 
-    if (detectedForms.length === 0) {
+    if (formsToSave.length === 0) {
       await sendSiteMappingsBulk(payload.siteId, {
         replace_auto: true,
         mappings: [],
@@ -85,7 +129,7 @@ export async function scanForm(payload: ScanFormPayload): Promise<void> {
 
     await sendSiteMappingsBulk(payload.siteId, {
       replace_auto: true,
-      mappings: detectedForms.map((form) => ({
+      mappings: formsToSave.map((form) => ({
         source_url: form.source_url,
         name_selector: form.name_selector,
         phone_selector: form.phone_selector,

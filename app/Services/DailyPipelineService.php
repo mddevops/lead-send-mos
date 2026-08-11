@@ -1644,6 +1644,15 @@ class DailyPipelineService
         $sites = Site::query()
             ->whereIn('id', $siteIds)
             ->where('status', 'ready')
+            ->where(function ($q): void {
+                $q->whereNull('submit_heal_status')
+                    ->orWhereNotIn('submit_heal_status', [
+                        'paused_remap',
+                        'rescanning',
+                        'testing',
+                        'failed_heal',
+                    ]);
+            })
             ->whereHas('formMappings', fn ($q) => $q->where('status', 'active'))
             ->orderBy('id')
             ->get();

@@ -364,6 +364,21 @@ class BotWebhookController extends Controller
 
         $this->syncProxyStateFromRun($run);
 
+        $site = $run->site;
+        $campaignName = (string) ($run->campaign?->name ?? '');
+        if ($site) {
+            $heal = app(\App\Services\FormHealService::class);
+            if (str_starts_with($campaignName, 'Heal тест:')) {
+                $heal->recordHealTestOutcome($site, (string) $run->status);
+            } elseif (str_starts_with($campaignName, 'Автопайплайн #')) {
+                $heal->recordSubmitOutcome(
+                    $site,
+                    (string) $run->status,
+                    $this->looksLikeProxyFailure($run),
+                );
+            }
+        }
+
         return response()->json(['ok' => true]);
     }
 
@@ -575,7 +590,20 @@ class BotWebhookController extends Controller
             'last_scan_at' => now(),
         ]);
 
-        if ($hasActive) {
+        $heal = app(\App\Services\FormHealService::class);
+        if (in_array($site->fresh()?->submit_heal_status, [
+            \App\Services\FormHealService::STATUS_RESCANNING,
+            \App\Services\FormHealService::STATUS_PAUSED,
+        ], true)) {
+            try {
+                $heal->afterScanMappingsSaved($site->fresh());
+            } catch (\Throwable $e) {
+                Log::warning('form_heal.after_scan_failed', [
+                    'site_id' => $site->id,
+                    'error' => $e->getMessage(),
+                ]);
+            }
+        } elseif ($hasActive) {
             try {
                 app(DailyPipelineService::class)->refreshPipelinesContainingSite((int) $site->id);
             } catch (\Throwable $e) {

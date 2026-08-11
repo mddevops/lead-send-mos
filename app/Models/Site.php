@@ -26,6 +26,9 @@ class Site extends Model
         'source',
         'is_promo',
         'notes',
+        'submit_fail_streak',
+        'submit_heal_status',
+        'submit_heal_meta',
         'last_scan_at',
         'discovered_at',
         'discovery_run_id',
@@ -39,6 +42,8 @@ class Site extends Model
             'rating_count' => 'integer',
             'rating_value' => 'float',
             'is_promo' => 'boolean',
+            'submit_fail_streak' => 'integer',
+            'submit_heal_meta' => 'array',
         ];
     }
 

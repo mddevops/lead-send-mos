@@ -104,6 +104,28 @@ class SitesTable
                         'disabled' => 'Отключён',
                         default => $state,
                     }),
+                TextColumn::make('submit_heal_status')
+                    ->label('Автолечение')
+                    ->badge()
+                    ->placeholder('—')
+                    ->formatStateUsing(fn (?string $state): string => match ($state) {
+                        'paused_remap' => 'Пауза (ошибки)',
+                        'rescanning' => 'Рескан формы',
+                        'testing' => 'Тест новой формы',
+                        'failed_heal' => 'Лечение не удалось',
+                        default => $state ? (string) $state : '—',
+                    })
+                    ->color(fn (?string $state): string => match ($state) {
+                        'testing', 'rescanning' => 'warning',
+                        'paused_remap' => 'danger',
+                        'failed_heal' => 'gray',
+                        default => 'gray',
+                    })
+                    ->toggleable(),
+                TextColumn::make('submit_fail_streak')
+                    ->label('Ошибки подряд')
+                    ->alignRight()
+                    ->toggleable(isToggledHiddenByDefault: true),
                 TextColumn::make('last_scan_at')
                     ->label('Последнее сканирование')
                     ->dateTime()
