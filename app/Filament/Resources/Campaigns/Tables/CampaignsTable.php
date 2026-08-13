@@ -24,7 +24,7 @@ class CampaignsTable
                 TextColumn::make('source')
                     ->label('Источник')
                     ->badge()
-                    ->formatStateUsing(fn (string $state): string => $state === 'telegram' ? 'Telegram' : 'Web'),
+                    ->formatStateUsing(fn (string $state): string => $state === 'telegram' ? 'Telegram' : 'Веб'),
                 TextColumn::make('status')
                     ->label('Статус')
                     ->badge(),
@@ -75,7 +75,7 @@ class CampaignsTable
                 SelectFilter::make('source')
                     ->label('Источник')
                     ->options([
-                        'web' => 'Web',
+                        'web' => 'Веб',
                         'telegram' => 'Telegram',
                     ]),
                 SelectFilter::make('status')

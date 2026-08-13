@@ -48,7 +48,7 @@ class ProxyForm
                 DateTimePicker::make('last_used_at')
                     ->label('Последнее использование'),
                 DateTimePicker::make('cooldown_until')
-                    ->label('Cooldown до'),
+                    ->label('Пауза до'),
                 TextInput::make('last_ip')
                     ->label('Последний IP'),
                 Textarea::make('notes')

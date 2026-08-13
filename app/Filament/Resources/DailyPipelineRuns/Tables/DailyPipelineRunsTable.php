@@ -66,8 +66,8 @@ class DailyPipelineRunsTable
                     ->label('Круг')
                     ->state(fn (DailyPipelineRun $record): string => (string) $record->submit_cycle_current)
                     ->alignRight(),
-                TextColumn::make('submit_success_count')->label('OK')->alignRight(),
-                TextColumn::make('submit_failed_count')->label('Err')->alignRight(),
+                TextColumn::make('submit_success_count')->label('Успех')->alignRight(),
+                TextColumn::make('submit_failed_count')->label('Ошибки')->alignRight(),
                 TextColumn::make('scheduled_start_at')
                     ->label('План старт')
                     ->dateTime('d.m H:i')

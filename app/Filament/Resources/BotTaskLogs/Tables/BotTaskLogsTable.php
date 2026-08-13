@@ -15,11 +15,18 @@ class BotTaskLogsTable
         return $table
             ->columns([
                 TextColumn::make('id')
-                    ->label('Task #')
+                    ->label('Задача №')
                     ->sortable(),
                 TextColumn::make('status')
                     ->label('Статус задачи')
-                    ->badge(),
+                    ->badge()
+                    ->formatStateUsing(fn (?string $state): string => match ($state) {
+                        'queued' => 'В очереди',
+                        'processing' => 'В обработке',
+                        'completed' => 'Завершена',
+                        'failed' => 'Ошибка',
+                        default => $state ?? '—',
+                    }),
                 TextColumn::make('site.name')
                     ->label('Сайт')
                     ->searchable(),
@@ -29,10 +36,19 @@ class BotTaskLogsTable
                 TextColumn::make('campaignSiteRun.campaign.source')
                     ->label('Источник')
                     ->badge()
-                    ->formatStateUsing(fn (?string $state): string => $state === 'telegram' ? 'Telegram' : 'Web'),
+                    ->formatStateUsing(fn (?string $state): string => $state === 'telegram' ? 'Telegram' : 'Веб'),
                 TextColumn::make('campaignSiteRun.status')
                     ->label('Статус отправки')
-                    ->badge(),
+                    ->badge()
+                    ->formatStateUsing(fn (?string $state): string => match ($state) {
+                        'pending' => 'Ожидание',
+                        'processing' => 'В обработке',
+                        'success' => 'Успех',
+                        'failed' => 'Ошибка',
+                        'unknown' => 'Неизвестно',
+                        'skipped' => 'Пропущен',
+                        default => $state ?? '—',
+                    }),
                 TextColumn::make('proxy')
                     ->label('Прокси')
                     ->formatStateUsing(fn ($state, $record): string => $record->campaignSiteRun?->proxy
@@ -80,20 +96,20 @@ class BotTaskLogsTable
                 SelectFilter::make('status')
                     ->label('Статус задачи')
                     ->options([
-                        'queued' => 'queued',
-                        'processing' => 'processing',
-                        'completed' => 'completed',
-                        'failed' => 'failed',
+                        'queued' => 'В очереди',
+                        'processing' => 'В обработке',
+                        'completed' => 'Завершена',
+                        'failed' => 'Ошибка',
                     ]),
                 SelectFilter::make('run_status')
                     ->label('Статус отправки')
                     ->options([
-                        'pending' => 'pending',
-                        'processing' => 'processing',
-                        'success' => 'success',
-                        'failed' => 'failed',
-                        'unknown' => 'unknown',
-                        'skipped' => 'skipped',
+                        'pending' => 'Ожидание',
+                        'processing' => 'В обработке',
+                        'success' => 'Успех',
+                        'failed' => 'Ошибка',
+                        'unknown' => 'Неизвестно',
+                        'skipped' => 'Пропущен',
                     ])
                     ->query(fn (Builder $query, array $data) => $query->when(
                         filled($data['value'] ?? null),
@@ -107,7 +123,7 @@ class BotTaskLogsTable
                 SelectFilter::make('source')
                     ->label('Источник')
                     ->options([
-                        'web' => 'Web',
+                        'web' => 'Веб',
                         'telegram' => 'Telegram',
                     ])
                     ->query(fn (Builder $query, array $data) => $query->when(

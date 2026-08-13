@@ -24,34 +24,34 @@ class FormMappingsTable
                     ->wrap()
                     ->toggleable(),
                 TextColumn::make('name_selector')
-                    ->label('Имя селектор')
+                    ->label('Селектор имени')
                     ->searchable(),
                 TextColumn::make('phone_selector')
-                    ->label('Телефон селектор')
+                    ->label('Селектор телефона')
                     ->searchable(),
                 TextColumn::make('email_selector')
-                    ->label('Email селектор')
+                    ->label('Селектор email')
                     ->searchable(),
                 TextColumn::make('message_selector')
-                    ->label('Сообщение селектор')
+                    ->label('Селектор сообщения')
                     ->searchable(),
                 TextColumn::make('submit_selector')
-                    ->label('Submit селектор')
+                    ->label('Селектор отправки')
                     ->searchable(),
                 TextColumn::make('open_modal_selector')
-                    ->label('Modal open селектор')
+                    ->label('Селектор открытия модалки')
                     ->searchable(),
                 TextColumn::make('consent_checkbox_selector')
                     ->label('Чекбокс согласия')
                     ->searchable(),
                 TextColumn::make('success_selector')
-                    ->label('Success селектор')
+                    ->label('Селектор успеха')
                     ->searchable(),
                 TextColumn::make('error_selector')
-                    ->label('Error селектор')
+                    ->label('Селектор ошибки')
                     ->searchable(),
                 TextColumn::make('iframe_selector')
-                    ->label('Iframe селектор')
+                    ->label('Селектор iframe')
                     ->searchable(),
                 TextColumn::make('wait_after_submit_ms')
                     ->label('Ожидание (мс)')

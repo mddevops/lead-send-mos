@@ -37,7 +37,7 @@ class FormMappingForm
                 TextInput::make('email_selector')
                     ->label('CSS селектор поля email'),
                 Textarea::make('select_selectors')
-                    ->label('Select-поля (селекторы, по одному в строке)')
+                    ->label('Выпадающие списки (селекторы, по одному в строке)')
                     ->helperText('Для каждого select бот выберет случайный вариант из списка.')
                     ->formatStateUsing(function ($state): ?string {
                         if (is_array($state)) {
@@ -56,10 +56,10 @@ class FormMappingForm
                 TextInput::make('message_selector')
                     ->label('CSS селектор поля сообщения'),
                 TextInput::make('submit_selector')
-                    ->label('CSS селектор кнопки submit')
+                    ->label('CSS селектор кнопки отправки')
                     ->required(),
                 TextInput::make('open_modal_selector')
-                    ->label('CSS селектор кнопки открытия формы (modal)'),
+                    ->label('CSS селектор кнопки открытия формы (модалка)'),
                 Select::make('pre_form_strategy')
                     ->label('Стратегия до формы (квиз/чат)')
                     ->options([
@@ -143,7 +143,7 @@ class FormMappingForm
                     ])
                     ->visible(fn ($get): bool => ($get('captcha_type') ?? 'none') === 'yandex_smartcaptcha'),
                 TextInput::make('captcha_iframe_selector')
-                    ->label('Iframe капчи'),
+                    ->label('Фрейм капчи'),
                 TextInput::make('captcha_checkbox_selector')
                     ->label('Чекбокс капчи (в iframe)'),
                 TextInput::make('captcha_token_selector')
@@ -155,7 +155,7 @@ class FormMappingForm
                     ->label('Текст ошибки')
                     ->columnSpanFull(),
                 TextInput::make('wait_after_submit_ms')
-                    ->label('Ожидание после submit (мс)')
+                    ->label('Ожидание после отправки (мс)')
                     ->required()
                     ->numeric()
                     ->default(2000),
@@ -174,18 +174,18 @@ class FormMappingForm
                     ->numeric()
                     ->default(0.0),
                 Toggle::make('screenshot_enabled')
-                    ->label('Делать скриншот для этого mapping')
+                    ->label('Делать скриншот для этого маппинга')
                     ->required(),
                 TextInput::make('screenshot_path')
                     ->label('Путь скриншота'),
                 Textarea::make('name_coordinates')
-                    ->label('Координаты имени (fallback JSON)')
+                    ->label('Координаты имени (запасной JSON)')
                     ->helperText('Пример: {"x":120,"y":340}'),
                 Textarea::make('phone_coordinates')
-                    ->label('Координаты телефона (fallback JSON)')
+                    ->label('Координаты телефона (запасной JSON)')
                     ->helperText('Пример: {"x":150,"y":380}'),
                 Textarea::make('submit_coordinates')
-                    ->label('Координаты submit (fallback JSON)')
+                    ->label('Координаты кнопки отправки (запасной JSON)')
                     ->helperText('Пример: {"x":170,"y":420}'),
                 Select::make('status')
                     ->label('Статус')

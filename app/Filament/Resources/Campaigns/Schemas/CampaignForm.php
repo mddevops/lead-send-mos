@@ -23,7 +23,7 @@ class CampaignForm
                 Select::make('source')
                     ->label('Источник')
                     ->options([
-                        'web' => 'Web',
+                        'web' => 'Веб',
                         'telegram' => 'Telegram',
                     ])
                     ->default('web')

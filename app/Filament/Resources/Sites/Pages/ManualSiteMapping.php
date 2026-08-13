@@ -135,7 +135,7 @@ class ManualSiteMapping extends Page implements HasForms
                     ->schema([
                         TextInput::make('builder_open_tag')->label('Тег')->placeholder('button, a'),
                         TextInput::make('builder_open_id')->label('ID')->placeholder('callback-open'),
-                        TextInput::make('builder_open_class')->label('Class')->placeholder('btn callback'),
+                        TextInput::make('builder_open_class')->label('Класс')->placeholder('btn callback'),
                     ]),
                 Section::make('Шаг 2 — область формы (опционально)')
                     ->description('Контейнер модалки или блока формы. Воркер ищет поля только внутри этого селектора (например, #popup-feedback или form#callback).')
@@ -143,7 +143,7 @@ class ManualSiteMapping extends Page implements HasForms
                     ->schema([
                         TextInput::make('builder_scope_tag')->label('Тег контейнера')->placeholder('form, div'),
                         TextInput::make('builder_scope_id')->label('ID контейнера')->placeholder('lead-form'),
-                        TextInput::make('builder_scope_class')->label('Class контейнера')->placeholder('modal-form'),
+                        TextInput::make('builder_scope_class')->label('Класс контейнера')->placeholder('modal-form'),
                     ]),
                 Section::make('Шаг 3 — поля формы')
                     ->description('Укажите id/class/name из DevTools. Если id/class одинаковые, используйте атрибут name.')
@@ -159,7 +159,7 @@ class ManualSiteMapping extends Page implements HasForms
                         TextInput::make('success_selector')->label('Селектор блока успеха'),
                         Textarea::make('success_text')->label('Текст успеха (если нет селектора)')->columnSpanFull(),
                         TextInput::make('error_selector')->label('Селектор ошибки'),
-                        TextInput::make('wait_after_submit_ms')->label('Ожидание после submit (мс)')->numeric()->default(2000),
+                        TextInput::make('wait_after_submit_ms')->label('Ожидание после отправки (мс)')->numeric()->default(2000),
                     ]),
                 Section::make('Капча')
                     ->description('Если на форме есть Yandex SmartCaptcha или аналог, выберите тип. Для Yandex укажите вид: галочка или слайдер.')
@@ -212,7 +212,7 @@ class ManualSiteMapping extends Page implements HasForms
                             ->columnSpanFull()
                             ->visible(fn ($get): bool => ($get('captcha_type') ?? 'none') !== 'none'),
                         TextInput::make('captcha_iframe_selector')
-                            ->label('Iframe капчи')
+                            ->label('Фрейм капчи')
                             ->placeholder('iframe[src*="smartcaptcha"]')
                             ->visible(fn ($get): bool => ($get('captcha_type') ?? 'none') !== 'none'),
                         TextInput::make('captcha_checkbox_selector')
@@ -239,9 +239,9 @@ class ManualSiteMapping extends Page implements HasForms
                         TextInput::make('first_name_selector')->label('Имя (отдельное)'),
                         TextInput::make('last_name_selector')->label('Фамилия (отдельное)'),
                         TextInput::make('phone_selector')->label('Телефон'),
-                        TextInput::make('email_selector')->label('Email'),
+                        TextInput::make('email_selector')->label('Эл. почта'),
                         Textarea::make('select_selectors')
-                            ->label('Select-поля (по одному селектору в строке)')
+                            ->label('Выпадающие списки (по одному селектору в строке)')
                             ->helperText('Дилер / модель / любой required select — бот выберет случайный option.')
                             ->formatStateUsing(function ($state): ?string {
                                 if (is_array($state)) {
@@ -263,7 +263,7 @@ class ManualSiteMapping extends Page implements HasForms
                             ->label('Чекбокс согласия 2')
                             ->placeholder('#agree2')
                             ->helperText('Если на форме два согласия — укажите второй селектор.'),
-                        TextInput::make('submit_selector')->label('Submit'),
+                        TextInput::make('submit_selector')->label('Кнопка отправки'),
                         Placeholder::make('selector_hint')
                             ->label('')
                             ->content(new HtmlString('<span class="text-sm text-gray-500">Пример: <code>#lead-form input.phone</code></span>'))
@@ -464,13 +464,13 @@ class ManualSiteMapping extends Page implements HasForms
                         ->label('ID')
                         ->placeholder('field-name'),
                     TextInput::make("builder_{$prefix}_class")
-                        ->label('Class')
+                        ->label('Класс')
                         ->placeholder('form-control'),
                     TextInput::make("builder_{$prefix}_name")
-                        ->label('Name')
+                        ->label('Атрибут name')
                         ->placeholder('phone, name, consent'),
                     TextInput::make("builder_{$prefix}_type")
-                        ->label('Type')
+                        ->label('Тип')
                         ->placeholder('text, tel, submit, checkbox'),
                 ]),
         ];

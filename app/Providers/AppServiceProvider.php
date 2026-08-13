@@ -19,6 +19,8 @@ class AppServiceProvider extends ServiceProvider
      */
     public function boot(): void
     {
-        //
+        // Filament UI (List / New / Edit / Save changes) follows app locale.
+        $locale = config('app.locale', 'ru');
+        app()->setLocale(is_string($locale) && $locale !== '' ? $locale : 'ru');
     }
 }

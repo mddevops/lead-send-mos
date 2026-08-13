@@ -136,25 +136,25 @@ class ProjectSettings extends Page implements HasForms
                             ->revealable()
                             ->columnSpanFull(),
                         TextInput::make('telegram_bot_token')
-                            ->label('Telegram bot token')
+                            ->label('Токен Telegram-бота')
                             ->password()
                             ->revealable()
                             ->columnSpanFull(),
                         TextInput::make('telegram_webhook_secret')
-                            ->label('Telegram webhook secret')
+                            ->label('Секрет webhook Telegram')
                             ->helperText('Должен совпадать с URL webhook: /api/telegram/webhook/{secret}')
                             ->password()
                             ->revealable()
                             ->columnSpanFull(),
                     ]),
 
-                Section::make('Proxy')
-                    ->description('Proxy обязателен всегда: скан Яндекса, скан форм и отправка. Без рабочих proxy задачи не стартуют.')
+                Section::make('Прокси')
+                    ->description('Прокси обязателен всегда: скан Яндекса, скан форм и отправка. Без рабочих прокси задачи не стартуют.')
                     ->columns(2)
                     ->schema([
                         Toggle::make('rotate_proxy_before_each_site')
                             ->label('Менять IP перед каждым сайтом')
-                            ->helperText('Если у proxy задан URL смены IP.'),
+                            ->helperText('Если у прокси задан URL смены IP.'),
                         Toggle::make('check_ip_before_run')
                             ->label('Проверять IP перед запуском'),
                         TextInput::make('proxy_change_ip_timeout_ms')

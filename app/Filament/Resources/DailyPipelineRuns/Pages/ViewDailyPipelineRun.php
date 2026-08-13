@@ -133,7 +133,7 @@ class ViewDailyPipelineRun extends ViewRecord implements HasTable
             ])
             ->headerActions([
                 Action::make('export')
-                    ->label('Export')
+                    ->label('Экспорт')
                     ->icon('heroicon-o-arrow-down-tray')
                     ->color('success')
                     ->action(function () use ($ids, $submitStats): BinaryFileResponse {

@@ -58,7 +58,7 @@ class DailyPipelineRunResource extends Resource
                         ->state(fn (DailyPipelineRun $record): int => $record->sitesCount()),
                     TextEntry::make('query')->label('Запрос')->columnSpanFull(),
                     TextEntry::make('max_pages')->label('Страниц выдачи'),
-                    TextEntry::make('use_proxy')->label('Proxy')->badge(),
+                    TextEntry::make('use_proxy')->label('Прокси')->badge(),
                     TextEntry::make('start_time')->label('Старт (план время)'),
                     TextEntry::make('scheduled_start_at')->label('Старт (дата/время)')->dateTime('d.m.Y H:i')->placeholder('сразу'),
                     TextEntry::make('deadline_at')
