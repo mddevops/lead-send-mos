@@ -132,6 +132,10 @@ export async function scanForm(payload: ScanFormPayload): Promise<void> {
       mappings: formsToSave.map((form) => ({
         source_url: form.source_url,
         name_selector: form.name_selector,
+        first_name_selector: form.first_name_selector ?? null,
+        last_name_selector: form.last_name_selector ?? null,
+        email_selector: form.email_selector ?? null,
+        select_selectors: form.select_selectors ?? null,
         phone_selector: form.phone_selector,
         submit_selector: form.submit_selector,
         consent_checkbox_selector: form.consent_checkbox_selector,

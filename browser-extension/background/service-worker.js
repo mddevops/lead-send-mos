@@ -71,6 +71,12 @@ async function upsertFormMapping(formPayload) {
       ? formPayload.source_urls
       : [formPayload.source_url || origin].filter(Boolean),
     name_selector: formPayload.name_selector || null,
+    first_name_selector: formPayload.first_name_selector || null,
+    last_name_selector: formPayload.last_name_selector || null,
+    email_selector: formPayload.email_selector || null,
+    select_selectors: Array.isArray(formPayload.select_selectors)
+      ? formPayload.select_selectors
+      : [],
     phone_selector: formPayload.phone_selector || null,
     submit_selector: formPayload.submit_selector || null,
     open_modal_selector: formPayload.open_modal_selector || null,
@@ -153,4 +159,27 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   })();
 
   return true;
+});
+
+async function reinjectContentScripts() {
+  const tabs = await chrome.tabs.query({ url: ['http://*/*', 'https://*/*'] });
+  await Promise.all(tabs.map(async (tab) => {
+    if (!tab.id) return;
+    try {
+      await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        files: ['content/capture.js'],
+      });
+      await chrome.scripting.insertCSS({
+        target: { tabId: tab.id },
+        files: ['content/capture.css'],
+      });
+    } catch {
+      // Restricted pages (chrome://, Web Store, etc.)
+    }
+  }));
+}
+
+chrome.runtime.onInstalled.addListener(() => {
+  reinjectContentScripts().catch(() => undefined);
 });

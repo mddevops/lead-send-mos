@@ -907,6 +907,286 @@ export async function truncateToInputMaxLength(locator: Locator, value: string):
   return fitTextToInputLimit(locator, value);
 }
 
+/**
+ * Find a visible text-like input inside form by nearby label / placeholder / name.
+ */
+export async function locateVisibleInputByLabel(
+  formRoot: Locator,
+  labelPattern: RegExp,
+): Promise<Locator | null> {
+  const inputs = formRoot.locator(
+    'input:not([type="hidden"]):not([type="checkbox"]):not([type="radio"]):not([type="submit"]):not([type="button"]):not([type="file"]), textarea',
+  ).filter({ visible: true });
+  const count = await inputs.count().catch(() => 0);
+
+  for (let i = 0; i < count; i += 1) {
+    const input = inputs.nth(i);
+    const matched = await input.evaluate((el, source) => {
+      const re = new RegExp(source, 'i');
+      const wrap = el.closest(
+        'label, .form__field, .form-field, .form-group, .t-input-group, [class*="field"], [class*="Field"], div',
+      ) ?? el.parentElement;
+      const blob = [
+        el.getAttribute('placeholder') || '',
+        el.getAttribute('aria-label') || '',
+        el.getAttribute('name') || '',
+        el.getAttribute('autocomplete') || '',
+        el.id || '',
+        wrap instanceof HTMLElement ? (wrap.innerText || wrap.textContent || '').slice(0, 120) : '',
+      ].join(' ').replace(/\s+/g, ' ').trim();
+      return re.test(blob);
+    }, labelPattern.source).catch(() => false);
+
+    if (matched) {
+      return input;
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Pick a random non-empty option in a native <select> or custom dropdown (react-select etc.).
+ * Menu options for react-select often render in document.body — pass `page` when available.
+ */
+export async function fillSelectRandom(
+  locator: Locator,
+  options?: { page?: Page; formRoot?: Locator },
+): Promise<string | null> {
+  const target = locator.filter({ visible: true }).first();
+  if ((await target.count().catch(() => 0)) === 0) {
+    return null;
+  }
+
+  const tag = await target.evaluate((el) => el.tagName.toLowerCase()).catch(() => '');
+  if (tag === 'select') {
+    return fillNativeSelectRandom(target);
+  }
+
+  return fillCustomSelectRandom(target, options?.page, options?.formRoot);
+}
+
+async function fillNativeSelectRandom(select: Locator): Promise<string | null> {
+  const picked = await select.evaluate((el) => {
+    const selectEl = el as HTMLSelectElement;
+    const options = [...selectEl.options].filter((opt) => {
+      const value = (opt.value || '').trim();
+      const text = (opt.textContent || '').replace(/\s+/g, ' ').trim();
+      if (!value && !text) {
+        return false;
+      }
+      if (opt.disabled) {
+        return false;
+      }
+      if (/выберите|select|choose|--/i.test(text) && (!value || value === '' || value === '0')) {
+        return false;
+      }
+      return true;
+    });
+
+    if (options.length === 0) {
+      return null;
+    }
+
+    const option = options[Math.floor(Math.random() * options.length)]!;
+    selectEl.value = option.value;
+    selectEl.dispatchEvent(new Event('input', { bubbles: true }));
+    selectEl.dispatchEvent(new Event('change', { bubbles: true }));
+    return (option.value || option.textContent || '').replace(/\s+/g, ' ').trim() || null;
+  }).catch(() => null);
+
+  return picked;
+}
+
+async function resolveCustomSelectControl(locator: Locator): Promise<Locator> {
+  const el = locator.first();
+  const control = el.locator(
+    'xpath=ancestor-or-self::*[contains(@class,"react-select__control") or contains(@class,"Select__control") or contains(@class,"select__control")][1]',
+  ).first();
+
+  if ((await control.count().catch(() => 0)) > 0) {
+    return control;
+  }
+
+  const nestedControl = el.locator(
+    '[class*="react-select__control"], [class*="Select__control"], [class*="select__control"]',
+  ).filter({ visible: true }).first();
+
+  if ((await nestedControl.count().catch(() => 0)) > 0) {
+    return nestedControl;
+  }
+
+  return el;
+}
+
+async function fillCustomSelectRandom(
+  locator: Locator,
+  page?: Page,
+  formRoot?: Locator,
+): Promise<string | null> {
+  const control = await resolveCustomSelectControl(locator);
+  await control.scrollIntoViewIfNeeded().catch(() => undefined);
+  await control.click({ timeout: 8000 }).catch(async () => {
+    await locator.first().click({ timeout: 8000 });
+  });
+
+  const optionSelector = [
+    '[class*="react-select__option"]',
+    '[id*="react-select"][id*="-option-"]',
+    '[class*="Select__option"]',
+    '[role="option"]',
+    '[class*="select__option"]',
+    'div[class*="menu"] [class*="option"]',
+  ].join(', ');
+
+  const scopes: Array<Page | Locator> = [];
+  if (page) {
+    scopes.push(page);
+  }
+  if (formRoot) {
+    scopes.push(formRoot);
+  }
+  scopes.push(control);
+
+  let options: Locator | null = null;
+  for (const scope of scopes) {
+    const candidate = scope.locator(optionSelector).filter({ visible: true });
+    try {
+      await candidate.first().waitFor({ state: 'visible', timeout: 2500 });
+      if ((await candidate.count()) > 0) {
+        options = candidate;
+        break;
+      }
+    } catch {
+      // try next scope
+    }
+  }
+
+  if (!options || (await options.count()) === 0) {
+    // Escape closed empty menu
+    if (page) {
+      await page.keyboard.press('Escape').catch(() => undefined);
+    }
+    return null;
+  }
+
+  const texts = await options.evaluateAll((nodes) => nodes.map((node) => (node.textContent || '').replace(/\s+/g, ' ').trim()));
+  const indices = texts
+    .map((text, index) => ({ text, index }))
+    .filter(({ text }) => text && !/выберите|select\s|choose|--|^$/i.test(text));
+
+  const pool = indices.length > 0 ? indices : texts.map((text, index) => ({ text, index }));
+  if (pool.length === 0) {
+    return null;
+  }
+
+  const pick = pool[Math.floor(Math.random() * pool.length)]!;
+  await options.nth(pick.index).click({ timeout: 5000 });
+  if (page) {
+    await page.waitForTimeout(200);
+  }
+
+  return pick.text || null;
+}
+
+/**
+ * Fill mapped selects; if mapped nodes are missing (e.g. react-select --has-value class),
+ * fall back to visible custom/native selects inside the form.
+ *
+ * Each mapping selector is treated as ONE control (`.first()`), so a broad
+ * `div.react-select__control` does not re-pick every dropdown when a second
+ * more specific selector follows.
+ */
+export async function fillMappedSelectsRandom(
+  page: Page,
+  mapping: MappingScope,
+  formRoot: Locator,
+  selectSelectors: string[],
+): Promise<Array<{ selector: string; picked: string | null }>> {
+  const results: Array<{ selector: string; picked: string | null }> = [];
+  const filledKeys = new Set<string>();
+
+  const controlKey = async (target: Locator): Promise<string> => {
+    const control = await resolveCustomSelectControl(target);
+    return control.evaluate((el) => {
+      const rect = el.getBoundingClientRect();
+      // Position only — class names change after a value is picked (--has-value).
+      return `${el.tagName}:${Math.round(rect.top)}:${Math.round(rect.left)}:${Math.round(rect.width)}`;
+    }).catch(() => `anon:${Date.now()}:${Math.random()}`);
+  };
+
+  const fillOne = async (selector: string, target: Locator): Promise<void> => {
+    const key = await controlKey(target);
+    if (filledKeys.has(key)) {
+      results.push({ selector, picked: null });
+      return;
+    }
+
+    filledKeys.add(key);
+    const picked = await fillSelectRandom(target, { page, formRoot });
+    results.push({ selector, picked });
+  };
+
+  for (const selectSelector of selectSelectors) {
+    const softSelector = selectSelector
+      .replace(/\.react-select__value-container--has-value/g, '.react-select__value-container')
+      .replace(/\.Select__value-container--has-value/g, '.Select__value-container');
+
+    let selectField = fieldLocator(page, mapping, formRoot, selectSelector);
+    if ((await selectField.count().catch(() => 0)) === 0 && softSelector !== selectSelector) {
+      selectField = fieldLocator(page, mapping, formRoot, softSelector);
+    }
+
+    const count = await selectField.count().catch(() => 0);
+    if (count === 0) {
+      results.push({ selector: selectSelector, picked: null });
+      continue;
+    }
+
+    // One selector → one control. Broad class selectors must not expand to all matches.
+    await fillOne(selectSelector, selectField.filter({ visible: true }).first());
+  }
+
+  const filledAny = results.some((row) => Boolean(row.picked));
+  if (!filledAny && selectSelectors.length > 0) {
+    const fallbackControls = formRoot.locator(
+      'select, [class*="react-select__control"], [class*="Select__control"]',
+    ).filter({ visible: true });
+    const count = await fallbackControls.count().catch(() => 0);
+    for (let i = 0; i < count; i += 1) {
+      await fillOne(`fallback[${i}]`, fallbackControls.nth(i));
+    }
+  }
+
+  return results;
+}
+
+/** Transliterate RU name parts → local@ya.ru */
+export function buildEmailFromName(firstName: string, lastName: string): string {
+  const map: Record<string, string> = {
+    а: 'a', б: 'b', в: 'v', г: 'g', д: 'd', е: 'e', ё: 'e', ж: 'zh', з: 'z', и: 'i', й: 'y',
+    к: 'k', л: 'l', м: 'm', н: 'n', о: 'o', п: 'p', р: 'r', с: 's', т: 't', у: 'u', ф: 'f',
+    х: 'h', ц: 'ts', ч: 'ch', ш: 'sh', щ: 'sch', ъ: '', ы: 'y', ь: '', э: 'e', ю: 'yu', я: 'ya',
+  };
+
+  const toLatin = (value: string): string => value
+    .toLowerCase()
+    .split('')
+    .map((ch) => {
+      if (map[ch] !== undefined) {
+        return map[ch];
+      }
+      if (/[a-z0-9]/.test(ch)) {
+        return ch;
+      }
+      return '';
+    })
+    .join('');
+
+  const local = `${toLatin(firstName)}.${toLatin(lastName)}`.replace(/^\.+|\.+$/g, '').replace(/\.{2,}/g, '.');
+  return `${local || 'user'}@ya.ru`;
+}
+
 /** First token of a full name ("Иван Иванов" → "Иван"). */
 export function firstNameOnly(fullName: string): string {
   const trimmed = fullName.trim().replace(/\s+/g, ' ');

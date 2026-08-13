@@ -1568,12 +1568,6 @@ class DailyPipelineService
             return 0;
         }
 
-        if (ProxyPicker::pick() === null) {
-            $this->notifyNoProxy('Скан форм отменён.');
-
-            throw new \RuntimeException('Нет доступного proxy');
-        }
-
         $settings = ProjectSetting::query()->firstOrCreate([]);
 
         $sites = Site::query()
@@ -1583,6 +1577,9 @@ class DailyPipelineService
             ->get();
 
         $queued = 0;
+        $reused = 0;
+        $reuseService = app(SiblingFormMappingReuseService::class);
+        $proxyMissingNotified = false;
 
         foreach ($sites as $site) {
             $already = BotTask::query()
@@ -1595,9 +1592,29 @@ class DailyPipelineService
                 continue;
             }
 
+            $reuse = $reuseService->tryReuseForSite($site);
+            if ($reuse !== null) {
+                $reused++;
+                Log::info('pipeline.scan_sibling_reuse', [
+                    'pipeline_id' => $pipeline->id,
+                    'site_id' => $site->id,
+                    'donor_id' => $reuse['donor_id'],
+                    'parent_domain' => $reuse['parent_domain'],
+                ]);
+
+                continue;
+            }
+
             $proxy = ProxyPicker::pick();
             if ($proxy === null) {
-                $this->notifyNoProxy("Скан форм остановлен на сайте #{$site->id}.");
+                if (! $proxyMissingNotified) {
+                    $this->notifyNoProxy("Скан форм остановлен на сайте #{$site->id}.");
+                    $proxyMissingNotified = true;
+                }
+
+                if ($reused === 0 && $queued === 0) {
+                    throw new \RuntimeException('Нет доступного proxy');
+                }
 
                 break;
             }
@@ -1631,6 +1648,14 @@ class DailyPipelineService
             $queued++;
         }
 
+        if ($reused > 0) {
+            Log::info('pipeline.scan_sibling_reuse_summary', [
+                'pipeline_id' => $pipeline->id,
+                'reused' => $reused,
+                'queued' => $queued,
+            ]);
+        }
+
         return $queued;
     }
 
@@ -1644,15 +1669,6 @@ class DailyPipelineService
         $sites = Site::query()
             ->whereIn('id', $siteIds)
             ->where('status', 'ready')
-            ->where(function ($q): void {
-                $q->whereNull('submit_heal_status')
-                    ->orWhereNotIn('submit_heal_status', [
-                        'paused_remap',
-                        'rescanning',
-                        'testing',
-                        'failed_heal',
-                    ]);
-            })
             ->whereHas('formMappings', fn ($q) => $q->where('status', 'active'))
             ->orderBy('id')
             ->get();
@@ -1724,6 +1740,9 @@ class DailyPipelineService
                     'runId' => $run->id,
                     'url' => SubmitLeadPayloadBuilder::submitUrl($site, $mapping),
                     'name' => $identity['name'],
+                    'first_name' => $identity['first_name'],
+                    'last_name' => $identity['last_name'],
+                    'email' => $identity['email'],
                     'phone' => $identity['phone'],
                     'region' => SubmitLeadPayloadBuilder::regionArray($site),
                     'screenshotConfig' => [

@@ -4,11 +4,9 @@ namespace App\Filament\Resources\DiscoveryRuns\RelationManagers;
 
 use App\Filament\Resources\Sites\Pages\ManualSiteMapping;
 use App\Filament\Resources\Sites\SiteResource;
-use App\Models\BotTask;
 use App\Models\DiscoveryRun;
-use App\Models\ProjectSetting;
 use App\Models\Site;
-use App\Support\ProxyPicker;
+use App\Support\ScanFormLauncher;
 use App\Support\SitesExcelExport;
 use Filament\Actions\Action;
 use Filament\Actions\BulkAction;
@@ -159,50 +157,31 @@ class SitesRelationManager extends RelationManager
                     ->icon('heroicon-o-magnifying-glass')
                     ->requiresConfirmation()
                     ->action(function (Site $record): void {
-                        $proxy = ProxyPicker::pick();
-                        if ($proxy === null) {
-                            app(\App\Services\DailyPipelineService::class)->notifyNoProxy('Скан форм не запущен (админка).');
+                        $result = ScanFormLauncher::reuseOrEnqueue($record);
 
+                        if ($result['mode'] === 'reused') {
+                            $info = $result['result'];
                             Notification::make()
-                                ->title('Нет доступного proxy')
-                                ->body('Скан форм без proxy не запускается.')
+                                ->title('Маппинг взят с поддомена')
+                                ->body("Донор #{$info['donor_id']} ({$info['donor_name']}), домен {$info['parent_domain']}, форм: {$info['mappings_count']}. Скан не нужен.")
+                                ->success()
+                                ->send();
+
+                            return;
+                        }
+
+                        if ($result['mode'] === 'error') {
+                            Notification::make()
+                                ->title($result['title'])
+                                ->body($result['body'])
                                 ->danger()
                                 ->send();
 
                             return;
                         }
 
-                        $settings = ProjectSetting::query()->first();
-
-                        $task = BotTask::query()->create([
-                            'type' => 'scan_form',
-                            'status' => 'queued',
-                            'site_id' => $record->id,
-                            'payload' => [
-                                'taskId' => null,
-                                'siteId' => $record->id,
-                                'url' => $record->url,
-                                'maxFormMappings' => max(1, min(10, (int) ($settings?->max_form_mappings_per_site ?? 5))),
-                                'proxy' => ProxyPicker::toPayload($proxy),
-                                'proxyConfig' => ProxyPicker::configFromSettings($settings),
-                            ],
-                        ]);
-
-                        $task->update([
-                            'payload' => [
-                                ...($task->payload ?? []),
-                                'taskId' => $task->id,
-                            ],
-                        ]);
-
-                        ProxyPicker::markUsed($proxy);
-
-                        $record->update([
-                            'status' => 'scanning',
-                        ]);
-
                         Notification::make()
-                            ->title("Задача scan_form #{$task->id} поставлена в очередь")
+                            ->title("Задача scan_form #{$result['task_id']} поставлена в очередь")
                             ->success()
                             ->send();
                     }),

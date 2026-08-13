@@ -75,20 +75,137 @@ async function isReallyVisible(locator: Locator): Promise<boolean> {
 }
 
 async function isCaptchaChallengeStillOpen(page: Page): Promise<boolean> {
+  const url = page.url();
+  if (/showcaptcha|checkcaptcha|smartcaptcha\.yandex|captcha\.yandex/i.test(url)) {
+    return true;
+  }
+
+  // Frame URL alone is enough: Tilda hosts SmartCaptcha under forms.tildaapi.com/procces/captcha/,
+  // and the checkbox lives in a nested smartcaptcha.yandexcloud.net/checkbox.ru iframe.
+  // Outer shell (#captchaBox) is NOT on the main page — only inside those frames.
+  const captchaFrameOpen = page.frames().some((frame) => {
+    const frameUrl = frame.url();
+    return /procces\/captcha|forms\.tildaapi\.com.*captcha|smartcaptcha\.yandexcloud|captcha\.yandexcloud|checkbox\.ru|\/checkbox\?/i.test(
+      frameUrl,
+    );
+  });
+  if (captchaFrameOpen) {
+    return true;
+  }
+
   const selectors = [
+    '#captchaBox',
+    '#captchaframeBox',
+    '[data-testid="smartCaptcha-container"]',
     '.AdvancedCaptcha',
+    '.AdvancedCaptcha-ImageWrapper',
     '#captcha-slider',
     '[data-testid="thumb"]',
     '.CheckboxCaptcha-Button',
+    '.CheckboxCaptcha-Anchor',
+    '.CheckboxCaptcha',
+    '#checkbox-captcha-form',
+    '[data-testid="checkbox-captcha"]',
+    '.smart-captcha',
+    '[class*="SmartCaptcha"]',
+    'iframe[src*="smartcaptcha"]',
+    'iframe[src*="captcha.yandex"]',
+    'iframe[src*="checkbox.ru"]',
+    'iframe[data-testid="checkbox-iframe"]',
+    'iframe[data-testid="advanced-iframe"]',
+    // Tilda wraps Yandex SmartCaptcha in its own fullscreen captcha iframe.
+    'iframe[src*="forms.tildaapi.com"][src*="captcha"]',
+    'iframe[src*="tildaapi.com/procces/captcha"]',
+    'iframe[src*="/procces/captcha"]',
+    // Icons / silhouette challenge (fullscreen overlay after "I'm not a robot").
+    '.CaptchaButton',
+    '[class*="TaskImage"]',
+    '[class*="Silhouette"]',
+    'img[class*="Captcha"]',
   ];
 
   for (const selector of selectors) {
-    if (await isReallyVisible(page.locator(selector).first())) {
+    const node = page.locator(selector).first();
+    if ((await node.count()) === 0) {
+      continue;
+    }
+
+    // Captcha iframes often start with opacity:0 — treat attached oversized frames as open.
+    if (/iframe/i.test(selector)) {
+      const box = await node.boundingBox().catch(() => null);
+      if (box && box.width >= 40 && box.height >= 40) {
+        return true;
+      }
+    }
+
+    if (await isReallyVisible(node)) {
+      return true;
+    }
+  }
+
+  // Inside Tilda/Yandex frames look for shell markers (checkbox itself is in a child iframe).
+  for (const frame of page.frames()) {
+    const frameUrl = frame.url();
+    if (!/smartcaptcha|captcha\.yandex|checkbox|showcaptcha|tildaapi\.com.*captcha|procces\/captcha/i.test(frameUrl)) {
+      continue;
+    }
+
+    const hasChallenge = await frame
+      .evaluate(() => {
+        if (
+          document.querySelector(
+            '#captchaBox, #captchaframeBox, [data-testid="smartCaptcha-container"], .smart-captcha, iframe[data-testid="checkbox-iframe"], iframe[src*="checkbox"], iframe[src*="smartcaptcha"]',
+          )
+        ) {
+          return true;
+        }
+
+        const token = document.querySelector(
+          'input[name="smart-token"], input[data-testid="smart-token"]',
+        ) as HTMLInputElement | null;
+        // Empty token + captcha shell = challenge still pending.
+        if (token && !(token.value || '').trim()) {
+          return true;
+        }
+
+        const nodes = document.querySelectorAll(
+          '.CheckboxCaptcha-Button, .CheckboxCaptcha, #js-button, #captcha-slider, [data-testid="thumb"], .AdvancedCaptcha, [class*="TaskImage"], [class*="Silhouette"]',
+        );
+        for (const el of Array.from(nodes)) {
+          const style = window.getComputedStyle(el);
+          const rect = el.getBoundingClientRect();
+          if (
+            style.display !== 'none'
+            && style.visibility !== 'hidden'
+            && Number(style.opacity) !== 0
+            && rect.width >= 4
+            && rect.height >= 4
+          ) {
+            return true;
+          }
+        }
+
+        return false;
+      })
+      .catch(() => false);
+
+    if (hasChallenge) {
       return true;
     }
   }
 
   return false;
+}
+
+/** network_ok + DOM noise from captcha overlay must not count as submit success alone. */
+function isWeakSuccessOnly(reasons: string[]): boolean {
+  const strong = new Set([
+    'success_text',
+    'success_modal',
+    'form_hidden',
+    'button_text',
+  ]);
+  return !reasons.some((reason) => strong.has(reason));
 }
 
 async function readFormScopeText(input: ResultDetectionInput): Promise<string> {
@@ -284,6 +401,13 @@ async function computeSuccessScore(input: ResultDetectionInput): Promise<{ score
 export async function detectSubmitResult(input: ResultDetectionInput): Promise<ResultDetectionOutput> {
   const urlChanged = input.initialUrl !== input.finalUrl;
   const pageChanged = input.initialContentHash !== input.finalContentHash;
+  const captchaUrl = /showcaptcha|checkcaptcha/i.test(input.finalUrl);
+
+  // Captcha overlay hides the form / mutates DOM / may 200 on its own POST —
+  // check BEFORE form_hidden / url_changed / successScore.
+  if (captchaUrl || await isCaptchaChallengeStillOpen(input.page)) {
+    return { status: 'failed', detected_error_reason: 'captcha_still_visible' };
+  }
 
   const consoleHit = (input.consoleMessages ?? []).find((line) => CONSOLE_SUCCESS_PATTERN.test(line));
 
@@ -303,10 +427,6 @@ export async function detectSubmitResult(input: ResultDetectionInput): Promise<R
 
   if (formText && ERROR_TEXT_PATTERN.test(formText)) {
     return { status: 'failed', detected_error_reason: 'error_text_in_form' };
-  }
-
-  if (await isCaptchaChallengeStillOpen(input.page)) {
-    return { status: 'failed', detected_error_reason: 'captcha_still_visible' };
   }
 
   if (input.successSelector && (await input.page.locator(input.successSelector).count()) > 0) {
@@ -349,8 +469,9 @@ export async function detectSubmitResult(input: ResultDetectionInput): Promise<R
   }
 
   // Multi-signal successScore (network / button / modal / mutation) before soft fallbacks.
+  // Reject weak combos like network_ok+dom_mutation (typical captcha overlay false positive).
   const scored = await computeSuccessScore(input);
-  if (scored.score >= MIN_SUCCESS_SCORE) {
+  if (scored.score >= MIN_SUCCESS_SCORE && !isWeakSuccessOnly(scored.reasons)) {
     return {
       status: 'success',
       detected_success_reason: `success_score:${scored.score}:${scored.reasons.join('+')}`,
@@ -359,7 +480,12 @@ export async function detectSubmitResult(input: ResultDetectionInput): Promise<R
 
   // Soft success: captcha passed + re-submit + wait, challenge gone, no error signal.
   // Prefer explicit signals above; this is a last resort for sites that only mutate DOM subtly.
+  // Re-check captcha: solve may have left a second challenge (icons) on screen.
   if (input.captchaSolvedAfterSubmit) {
+    if (await isCaptchaChallengeStillOpen(input.page)) {
+      return { status: 'failed', detected_error_reason: 'captcha_still_visible_after_solve' };
+    }
+
     return { status: 'success', detected_success_reason: 'post_captcha_settled' };
   }
 

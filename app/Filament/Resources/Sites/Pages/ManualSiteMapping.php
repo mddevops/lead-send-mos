@@ -63,7 +63,13 @@ class ManualSiteMapping extends Page implements HasForms
 
         $this->form->fill([
             'name_selector' => $mapping?->name_selector,
+            'first_name_selector' => $mapping?->first_name_selector,
+            'last_name_selector' => $mapping?->last_name_selector,
             'phone_selector' => $mapping?->phone_selector,
+            'email_selector' => $mapping?->email_selector,
+            'select_selectors' => is_array($mapping?->select_selectors)
+                ? implode("\n", $mapping->select_selectors)
+                : null,
             'submit_selector' => $mapping?->submit_selector,
             'open_modal_selector' => $mapping?->open_modal_selector,
             'form_scope_selector' => $formScope,
@@ -229,8 +235,29 @@ class ManualSiteMapping extends Page implements HasForms
                     ->schema([
                         TextInput::make('open_modal_selector')->label('Открыть форму'),
                         TextInput::make('form_scope_selector')->label('Область формы (шаг 2)'),
-                        TextInput::make('name_selector')->label('Имя'),
+                        TextInput::make('name_selector')->label('ФИО (одно поле)'),
+                        TextInput::make('first_name_selector')->label('Имя (отдельное)'),
+                        TextInput::make('last_name_selector')->label('Фамилия (отдельное)'),
                         TextInput::make('phone_selector')->label('Телефон'),
+                        TextInput::make('email_selector')->label('Email'),
+                        Textarea::make('select_selectors')
+                            ->label('Select-поля (по одному селектору в строке)')
+                            ->helperText('Дилер / модель / любой required select — бот выберет случайный option.')
+                            ->formatStateUsing(function ($state): ?string {
+                                if (is_array($state)) {
+                                    return implode("\n", array_values(array_filter($state)));
+                                }
+
+                                return is_string($state) ? $state : null;
+                            })
+                            ->dehydrateStateUsing(function ($state): ?array {
+                                if (! is_string($state) || trim($state) === '') {
+                                    return null;
+                                }
+
+                                return array_values(array_filter(array_map('trim', preg_split('/\r\n|\r|\n/', $state) ?: [])));
+                            })
+                            ->columnSpanFull(),
                         TextInput::make('consent_checkbox_selector')->label('Чекбокс согласия 1'),
                         TextInput::make('consent_checkbox_2_selector')
                             ->label('Чекбокс согласия 2')
@@ -289,6 +316,9 @@ class ManualSiteMapping extends Page implements HasForms
         if ($activate) {
             Validator::make($data, [
                 'name_selector' => ['nullable', 'string'],
+                'first_name_selector' => ['nullable', 'string'],
+                'last_name_selector' => ['nullable', 'string'],
+                'email_selector' => ['nullable', 'string'],
                 'phone_selector' => ['required', 'string'],
                 'submit_selector' => ['required', 'string'],
             ], [

@@ -25,14 +25,34 @@ class FormMappingForm
                     ->url()
                     ->columnSpanFull(),
                 TextInput::make('name_selector')
-                    ->label('CSS селектор поля имени')
-                    ->required(),
+                    ->label('CSS селектор ФИО (одно поле)')
+                    ->nullable(),
+                TextInput::make('first_name_selector')
+                    ->label('CSS селектор имени'),
+                TextInput::make('last_name_selector')
+                    ->label('CSS селектор фамилии'),
                 TextInput::make('phone_selector')
                     ->label('CSS селектор поля телефона')
                     ->required(),
                 TextInput::make('email_selector')
-                    ->label('CSS селектор поля email')
-                    ->email(),
+                    ->label('CSS селектор поля email'),
+                Textarea::make('select_selectors')
+                    ->label('Select-поля (селекторы, по одному в строке)')
+                    ->helperText('Для каждого select бот выберет случайный вариант из списка.')
+                    ->formatStateUsing(function ($state): ?string {
+                        if (is_array($state)) {
+                            return implode("\n", array_values(array_filter($state)));
+                        }
+
+                        return is_string($state) ? $state : null;
+                    })
+                    ->dehydrateStateUsing(function ($state): ?array {
+                        if (! is_string($state) || trim($state) === '') {
+                            return null;
+                        }
+
+                        return array_values(array_filter(array_map('trim', preg_split('/\r\n|\r|\n/', $state) ?: [])));
+                    }),
                 TextInput::make('message_selector')
                     ->label('CSS селектор поля сообщения'),
                 TextInput::make('submit_selector')
@@ -141,7 +161,11 @@ class FormMappingForm
                     ->default(2000),
                 Select::make('mapping_type')
                     ->label('Тип маппинга')
-                    ->options(['auto' => 'Авто', 'manual' => 'Ручной'])
+                    ->options([
+                        'auto' => 'Авто',
+                        'manual' => 'Ручной',
+                        'sibling' => 'С поддомена',
+                    ])
                     ->default('auto')
                     ->required(),
                 TextInput::make('confidence')

@@ -24,8 +24,11 @@ class ManualMappingSaver
             ],
             [
                 'name_selector' => $data['name_selector'],
+                'first_name_selector' => $data['first_name_selector'] ?? null,
+                'last_name_selector' => $data['last_name_selector'] ?? null,
                 'phone_selector' => $data['phone_selector'],
                 'email_selector' => $data['email_selector'] ?? null,
+                'select_selectors' => self::normalizeStringList($data['select_selectors'] ?? null),
                 'message_selector' => $data['message_selector'] ?? null,
                 'submit_selector' => $data['submit_selector'],
                 'open_modal_selector' => $data['open_modal_selector'] ?? null,

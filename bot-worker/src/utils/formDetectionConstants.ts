@@ -35,13 +35,29 @@ export function isLeadPhoneSelector(selector: string): boolean {
     return false;
   }
 
-  if (/data-type=["']?NAME|data-type=["']?FIO|placeholder\s*\*=\s*["'][^"']*имя|placeholder\s*\*=\s*["'][^"']*Имя|#name\b|name=["']name["']/i.test(selector)
-    && !/data-type=["']?PHONE|type=["']?tel|phone|tel|телефон/i.test(selector)) {
+  // Explicitly a name/email control — never treat as phone.
+  if (
+    /data-type=["']?NAME|data-type=["']?FIO|placeholder\s*\*=\s*["'][^"']*(?:имя|Имя)|#name\b|name\s*=\s*["']?name["']?(?:\s|\]|$)|firstname|lastname|fio/i.test(selector)
+    && !/data-type=["']?PHONE|type\s*=\s*["']?tel|phone|телефон/i.test(selector)
+  ) {
     return false;
   }
 
-  return /data-type=["']?PHONE|type=["']?tel|inputmode=["']?tel|#phone\b|name=["'][^"']*phone|name=["']tel|phone_num|телефон|placeholder.*тел|\+7/i.test(selector)
-    && !/#vin\b|#year\b|#email\b|name=["'][^"']*(vin|year|email)/i.test(selector);
+  // Classic phone markers in the selector string.
+  if (
+    /data-type=["']?PHONE|type\s*=\s*["']?tel|inputmode\s*=\s*["']?tel|#phone\b|name\s*=\s*["'][^"']*phone|name\s*=\s*["']?tel["']?(?:\s|\]|$)|phone_num|телефон|placeholder.*тел|\+7/i.test(selector)
+    && !/#vin\b|#year\b|#email\b|name\s*=\s*["'][^"']*(vin|year|email)/i.test(selector)
+  ) {
+    return true;
+  }
+
+  // Structural paths from the detector (nth-of-type / nested input) for SPA forms
+  // without name=/type=tel — trust detection unless the path itself looks like name/email.
+  if (/(?:nth-of-type|nth-child|>)\s*input\b/i.test(selector)) {
+    return !/(?:имя|fio|#name\b|name\s*=\s*["']?name["']?|firstname|lastname|email|почт|фамил)/i.test(selector);
+  }
+
+  return false;
 }
 
 /** Name field: name="name" or placeholder «Имя», «Ф.И.О.»… */

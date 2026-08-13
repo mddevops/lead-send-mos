@@ -13,7 +13,10 @@ import {
   ensurePhoneFullyFilled,
   fieldLocator,
   fillField,
+  fillMappedSelectsRandom,
   firstNameOnly,
+  buildEmailFromName,
+  locateVisibleInputByLabel,
   humanWarmupScroll,
   openFormModal,
   openFormModalWithFallbacks,
@@ -52,10 +55,17 @@ type SubmitLeadPayload = {
   runId: number;
   url: string;
   name: string;
+  first_name?: string;
+  last_name?: string;
+  email?: string;
   phone: string;
   region?: RegionPayload;
   mapping: {
     name_selector?: string | null;
+    first_name_selector?: string | null;
+    last_name_selector?: string | null;
+    email_selector?: string | null;
+    select_selectors?: string[] | null;
     phone_selector: string;
     submit_selector: string;
     open_modal_selector?: string | null;
@@ -150,22 +160,29 @@ export async function submitLead(payload: SubmitLeadPayload): Promise<void> {
       const request = response.request();
       const method = request.method().toUpperCase();
       const status = response.status();
+      const responseHref = response.url();
+
+      // Captcha / analytics POSTs often return 200 and must not feed successScore.network_ok.
+      const isNoiseNetwork = /mc\.yandex|metrika|google-analytics|googletagmanager|facebook\.com\/tr|vk\.com\/rtrg|smartcaptcha|captcha\.yandex|yandexcloud\.net\/check|showcaptcha|checkcaptcha|api-maps\.yandex|log\.api-maps|doubleclick|yandex\.ru\/clck|tildaapi\.com\/event|stat\.tilda|forms\.tildaapi\.com\/procces\/captcha/i.test(
+        responseHref,
+      );
 
       if ((method === 'POST' || method === 'PUT' || method === 'PATCH')
-        && (status === 200 || status === 201 || status === 204)) {
+        && (status === 200 || status === 201 || status === 204)
+        && !isNoiseNetwork) {
         networkOkStatuses.push(status);
       }
 
-      if (!request.url().includes(payload.url) && !response.url().includes(new URL(payload.url).hostname)) {
+      if (!request.url().includes(payload.url) && !responseHref.includes(new URL(payload.url).hostname)) {
         return;
       }
 
       // Ignore analytics/beacon responses (Yandex Metrika etc.) — they blow DB columns and aren't the form POST.
-      if (/mc\.yandex|google-analytics|googletagmanager|facebook\.com\/tr|vk\.com\/rtrg/i.test(response.url())) {
+      if (/mc\.yandex|google-analytics|googletagmanager|facebook\.com\/tr|vk\.com\/rtrg|api-maps\.yandex|log\.api-maps/i.test(responseHref)) {
         return;
       }
 
-      responseUrl = response.url();
+      responseUrl = responseHref;
       responseStatus = status;
 
       try {
@@ -316,26 +333,182 @@ export async function submitLead(payload: SubmitLeadPayload): Promise<void> {
     const captchaWatch = attachFormCaptchaWatcher(page, formRoot, captchaConfig);
 
     try {
-      // Name is optional: many dealer modals are phone-only (Jaecoo etc.).
-      if (nameCount > 0 && shouldFillName) {
-        const looksLikeName = nameSelector
-          || (await resolvedName.first().evaluate((el) => {
-            const input = el as HTMLInputElement;
-            const blob = [
-              input.getAttribute('data-type') || '',
-              input.name || '',
-              input.placeholder || '',
-              input.getAttribute('aria-label') || '',
-            ].join(' ');
+      let formScope = formRoot;
+      const selectSelectors = Array.isArray(payload.mapping.select_selectors)
+        ? payload.mapping.select_selectors.filter((s): s is string => typeof s === 'string' && s.trim() !== '')
+        : [];
 
-            return /name|имя|fio|фио/i.test(blob);
-          }).catch(() => false));
+      logger.info(
+        {
+          fillPipeline: 'split_select_email_v2',
+          selectCount: selectSelectors.length,
+          hasFirstName: Boolean((payload.mapping.first_name_selector ?? '').trim()),
+          hasLastName: Boolean((payload.mapping.last_name_selector ?? '').trim()),
+          hasEmail: Boolean((payload.mapping.email_selector ?? '').trim()),
+          firstName: payload.first_name ?? null,
+          lastName: payload.last_name ?? null,
+          email: payload.email ?? null,
+        },
+        'Starting extended form fill (selects / split name / email)',
+      );
 
-        if (looksLikeName) {
-          await fillField(resolvedName, payload.name, fillBehavior);
-          await captchaWatch.drain(2000);
+      const firstNameSelector = (payload.mapping.first_name_selector ?? '').trim();
+      const lastNameSelector = (payload.mapping.last_name_selector ?? '').trim();
+      const emailSelector = (payload.mapping.email_selector ?? '').trim();
+      const firstNameValue = (payload.first_name || firstNameOnly(payload.name) || '').trim();
+      const lastFromFull = payload.name.trim().split(/\s+/).filter(Boolean).slice(-1)[0] || '';
+      const lastNameValue = (payload.last_name || (lastFromFull !== firstNameValue ? lastFromFull : '') || '').trim();
+      const emailValue = (payload.email || '').trim() || buildEmailFromName(firstNameValue, lastNameValue);
+
+      const fillBySelectorOrFallback = async (
+        label: string,
+        selector: string,
+        value: string,
+        fallback: string,
+        labelPattern?: RegExp,
+        options?: { onlyIfEmpty?: boolean },
+      ): Promise<boolean> => {
+        if (!value) {
+          return false;
         }
-      }
+
+        const maybeFill = async (mapped: ReturnType<typeof fieldLocator> | Awaited<ReturnType<typeof locateVisibleInputByLabel>>, via: string): Promise<boolean> => {
+          if (!mapped) {
+            return false;
+          }
+          if ((await mapped.count().catch(() => 0)) < 1) {
+            return false;
+          }
+
+          if (options?.onlyIfEmpty) {
+            const current = await mapped.first().inputValue().catch(() => '');
+            if (current && current.replace(/\s+/g, '').length > 0) {
+              logger.info({ label, via, skipped: 'already_filled' }, 'Skipped identity field');
+              return true;
+            }
+          }
+
+          await fillField(mapped, value, fillBehavior);
+          logger.info({ label, selector: selector || null, via }, 'Filled identity field');
+          return true;
+        };
+
+        try {
+          if (selector) {
+            const mapped = fieldLocator(page, payload.mapping, formScope, selector);
+            if (await maybeFill(mapped, 'mapped')) {
+              return true;
+            }
+            logger.warn({ label, selector }, 'Mapped identity selector not found — trying fallback');
+          }
+
+          const fallbackLoc = formScope.locator(fallback).filter({ visible: true }).first();
+          if (await maybeFill(fallbackLoc, 'fallback')) {
+            return true;
+          }
+
+          if (labelPattern) {
+            const byLabel = await locateVisibleInputByLabel(formScope, labelPattern);
+            if (await maybeFill(byLabel, 'label')) {
+              return true;
+            }
+          }
+        } catch (error) {
+          logger.warn(
+            { label, selector: selector || null, error: error instanceof Error ? error.message : String(error) },
+            'Identity field fill failed',
+          );
+          return false;
+        }
+
+        logger.warn({ label, selector: selector || null }, 'Identity field not filled');
+        return false;
+      };
+
+      const fillExtendedIdentityFields = async (options?: { includeSelects?: boolean; onlyIfEmpty?: boolean }): Promise<void> => {
+        const includeSelects = options?.includeSelects !== false;
+        const onlyIfEmpty = options?.onlyIfEmpty === true;
+
+        if (includeSelects && selectSelectors.length > 0) {
+          const selectResults = await fillMappedSelectsRandom(page, payload.mapping, formScope, selectSelectors);
+          for (const row of selectResults) {
+            logger.info({ selectSelector: row.selector, picked: row.picked }, 'Filled select with random option');
+          }
+          if (!selectResults.some((row) => Boolean(row.picked))) {
+            logger.warn({ selectSelectors }, 'Mapped selects present but none were filled');
+          }
+        }
+
+        if (firstNameSelector || lastNameSelector) {
+          await fillBySelectorOrFallback(
+            'first_name',
+            firstNameSelector,
+            firstNameValue,
+            'input[autocomplete="given-name"], input[name*="first" i], input[placeholder*="Имя" i], input[aria-label*="Имя" i]',
+            /(?:^|[\s:])имя\b|first.?name|given.?name/i,
+            { onlyIfEmpty },
+          );
+          await fillBySelectorOrFallback(
+            'last_name',
+            lastNameSelector,
+            lastNameValue,
+            'input[autocomplete="family-name"], input[name*="last" i], input[name*="surname" i], input[placeholder*="Фамили" i], input[aria-label*="Фамили" i]',
+            /фамил|last.?name|family.?name|surname/i,
+            { onlyIfEmpty },
+          );
+        }
+
+        // Name is optional: many dealer modals are phone-only (Jaecoo etc.).
+        // Prefer split first/last when present; otherwise fill combined FIO field.
+        if (nameCount > 0 && shouldFillName && !firstNameSelector && !lastNameSelector) {
+          const looksLikeName = nameSelector
+            || (await resolvedName.first().evaluate((el) => {
+              const input = el as HTMLInputElement;
+              const blob = [
+                input.getAttribute('data-type') || '',
+                input.name || '',
+                input.placeholder || '',
+                input.getAttribute('aria-label') || '',
+              ].join(' ');
+
+              return /name|имя|fio|фио/i.test(blob);
+            }).catch(() => false));
+
+          if (looksLikeName) {
+            if (!onlyIfEmpty || !(await resolvedName.first().inputValue().catch(() => ''))) {
+              await fillField(resolvedName, payload.name, fillBehavior);
+              await captchaWatch.drain(2000);
+            }
+          }
+        } else if (nameCount > 0 && shouldFillName && nameSelector && (firstNameSelector || lastNameSelector)) {
+          const looksLikeCombined = await resolvedName.first().evaluate((el) => {
+            const input = el as HTMLInputElement;
+            const style = window.getComputedStyle(input);
+            const rect = input.getBoundingClientRect();
+            return style.display !== 'none' && style.visibility !== 'hidden' && rect.width >= 4 && rect.height >= 4;
+          }).catch(() => false);
+          if (looksLikeCombined && (!onlyIfEmpty || !(await resolvedName.first().inputValue().catch(() => '')))) {
+            await fillField(resolvedName, payload.name, fillBehavior);
+          }
+        }
+
+        if (
+          emailSelector
+          || (await formScope.locator('input[type="email"], input[name*="mail" i], input[placeholder*="почт" i]').filter({ visible: true }).count().catch(() => 0)) > 0
+          || Boolean(await locateVisibleInputByLabel(formScope, /e-?mail|почт|электронн/i))
+        ) {
+          await fillBySelectorOrFallback(
+            'email',
+            emailSelector,
+            emailValue,
+            'input[type="email"], input[name*="mail" i], input[placeholder*="почт" i], input[placeholder*="Email" i], input[autocomplete="email"]',
+            /e-?mail|почт|электронн/i,
+            { onlyIfEmpty },
+          );
+        }
+      };
+
+      await fillExtendedIdentityFields({ includeSelects: true });
 
       await fillField(resolvedPhone, payload.phone, fillBehavior);
       // Phone input often triggers SmartCaptcha 1–3s later — wait for widget + solve.
@@ -349,6 +522,7 @@ export async function submitLead(payload: SubmitLeadPayload): Promise<void> {
         payload.mapping.form_scope_selector,
       );
       activeRoot = retargetAfterPhone.formRoot;
+      formScope = activeRoot;
 
       let activeFields = await resolveLeadFieldsInRoot(page, {
         ...payload.mapping,
@@ -367,16 +541,13 @@ export async function submitLead(payload: SubmitLeadPayload): Promise<void> {
           },
           'Promo/action modal detected during fill — continuing inside that form',
         );
-
-        const nameVisible = (await activeFields.name.count()) > 0
-          && (await activeFields.name.filter({ visible: true }).first().isVisible().catch(() => false));
-
-        if (nameVisible && payload.name) {
-          await fillField(activeFields.name, payload.name, fillBehavior);
-        }
-
+        // New modal form — fill once (no selects re-roll on the original page form).
+        await fillExtendedIdentityFields({ includeSelects: true });
         await fillField(activeFields.phone, payload.phone, fillBehavior);
         await captchaWatch.drain(8000);
+      } else {
+        // Same form: only top up empty text fields if React wiped them — never re-open selects.
+        await fillExtendedIdentityFields({ includeSelects: false, onlyIfEmpty: true });
       }
 
       await ensureConsentInForm(
@@ -473,9 +644,10 @@ export async function submitLead(payload: SubmitLeadPayload): Promise<void> {
 
         try {
           const pageLooksSuccessful = async (): Promise<boolean> => {
+            // Keep this strict: bare «спасибо» / «принято» often live in footers and skip captcha solving.
             return page.evaluate(() => {
               const text = (document.body?.innerText || '').replace(/\s+/g, ' ');
-              return /успешно\s+отправлен|заявка\s+отправлен|спасибо|мы\s+свяжемся|принято/i.test(text);
+              return /успешно\s+отправлен|заявка\s+(?:успешно\s+)?отправлен|заявка\s+принята|спасибо\s+за\s+(?:заявк|обращени)|мы\s+свяжемся|мы\s+перезвоним/i.test(text);
             }).catch(() => false);
           };
 
@@ -500,11 +672,19 @@ export async function submitLead(payload: SubmitLeadPayload): Promise<void> {
             if (!(await pageLooksSuccessful())) {
               await captchaWatch.drain(1500);
 
+              // Tilda mounts captcha in a late fullscreen iframe after forms.tildaapi POST.
+              await page
+                .waitForSelector(
+                  'iframe[src*="/procces/captcha"], iframe[src*="forms.tildaapi.com"][src*="captcha"], iframe[src*="smartcaptcha"], iframe[src*="captcha.yandex"], .CheckboxCaptcha, .AdvancedCaptcha',
+                  { timeout: 6000, state: 'attached' },
+                )
+                .catch(() => undefined);
+
               // Skip blind post-submit captcha re-solve when already solved before submit
               // (stale AdvancedCaptcha/image shell must not burn another RuCaptcha round).
               if (!captchaWatch.wasSolved()) {
                 const captchaAfterSubmit = await resolveCaptcha(page, activeRoot, captchaConfig, {
-                  appearTimeoutMs: 2500,
+                  appearTimeoutMs: 5000,
                   phase: 'post-submit',
                   allowBlindTokenSolve: false,
                 });

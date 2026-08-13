@@ -40,20 +40,6 @@ class SiteForm
                     ->label('Телефон')
                     ->tel()
                     ->maxLength(50),
-                TextInput::make('business_status')
-                    ->label('Статус организации')
-                    ->placeholder('open / closed')
-                    ->maxLength(50),
-                TextInput::make('rating_count')
-                    ->label('Количество отзывов')
-                    ->numeric()
-                    ->minValue(0),
-                TextInput::make('rating_value')
-                    ->label('Рейтинг')
-                    ->numeric()
-                    ->minValue(0)
-                    ->maxValue(5)
-                    ->step(0.1),
                 Select::make('status')
                     ->label('Статус')
                     ->options([
@@ -70,9 +56,6 @@ class SiteForm
                     ->label('Промо (реклама)')
                     ->helperText('Сайт из рекламного блока Яндекса. Выкл — органика.')
                     ->default(true),
-                Textarea::make('notes')
-                    ->label('Заметки')
-                    ->columnSpanFull(),
                 DateTimePicker::make('last_scan_at')
                     ->label('Последнее сканирование'),
             ]);

@@ -120,6 +120,10 @@ function expandFormsForImport(site) {
       out.push({
         source_url: sourceUrl,
         name_selector: form.name_selector || null,
+        first_name_selector: form.first_name_selector || null,
+        last_name_selector: form.last_name_selector || null,
+        email_selector: form.email_selector || null,
+        select_selectors: form.select_selectors || [],
         phone_selector: form.phone_selector,
         submit_selector: form.submit_selector,
         open_modal_selector: form.open_modal_selector || null,
@@ -154,7 +158,11 @@ function renderSites() {
       <div class="form-item" data-site-id="${site.id}" data-form-id="${form.id}">
         <div><strong>Шаблон формы</strong> · страниц: ${pages.length}</div>
         <div>phone: ${escapeHtml(form.phone_selector || '—')}</div>
-        <div>name: ${escapeHtml(form.name_selector || '—')}</div>
+        <div>first: ${escapeHtml(form.first_name_selector || '—')}</div>
+        <div>last: ${escapeHtml(form.last_name_selector || '—')}</div>
+        <div>fio: ${escapeHtml(form.name_selector || '—')}</div>
+        <div>email: ${escapeHtml(form.email_selector || '—')}</div>
+        <div>selects: ${(form.select_selectors || []).length}</div>
         <div>submit: ${escapeHtml(form.submit_selector || '—')}</div>
         <div>квиз: ${(form.pre_form_click_selectors || []).length || (form.pre_form_strategy === 'quiz_auto' ? 'auto' : '—')}</div>
         <div>success: ${escapeHtml(form.success_selector || form.success_text || '—')}</div>

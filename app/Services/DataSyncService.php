@@ -745,8 +745,11 @@ class DataSyncService
         return [
             'source_url' => $mapping->source_url,
             'name_selector' => $mapping->name_selector,
+            'first_name_selector' => $mapping->first_name_selector,
+            'last_name_selector' => $mapping->last_name_selector,
             'phone_selector' => $mapping->phone_selector,
             'email_selector' => $mapping->email_selector,
+            'select_selectors' => $mapping->select_selectors,
             'message_selector' => $mapping->message_selector,
             'submit_selector' => $mapping->submit_selector,
             'open_modal_selector' => $mapping->open_modal_selector,

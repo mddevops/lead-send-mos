@@ -34,6 +34,10 @@ import { discoverUrlsFromRobotsAndSitemaps, pageHtmlLooksLikeLeadForm } from './
 export type DetectedFormMapping = {
   source_url: string;
   name_selector: string | null;
+  first_name_selector?: string | null;
+  last_name_selector?: string | null;
+  email_selector?: string | null;
+  select_selectors?: string[] | null;
   phone_selector: string;
   submit_selector: string;
   consent_checkbox_selector: string | null;
@@ -1186,6 +1190,10 @@ function toDetectedForm(
   raw: {
     formScopeSelector: string | null;
     nameSelector: string | null;
+    firstNameSelector?: string | null;
+    lastNameSelector?: string | null;
+    emailSelector?: string | null;
+    selectSelectors?: string[];
     phoneSelector: string;
     submitSelector: string;
     consentCheckboxSelectors: string[];
@@ -1207,6 +1215,10 @@ function toDetectedForm(
   return {
     source_url: sourceUrl,
     name_selector: raw.nameSelector,
+    first_name_selector: raw.firstNameSelector ?? null,
+    last_name_selector: raw.lastNameSelector ?? null,
+    email_selector: raw.emailSelector ?? null,
+    select_selectors: (raw.selectSelectors ?? []).length > 0 ? raw.selectSelectors ?? null : null,
     phone_selector: raw.phoneSelector,
     submit_selector: raw.submitSelector,
     consent_checkbox_selector: raw.consentCheckboxSelectors[0] ?? null,

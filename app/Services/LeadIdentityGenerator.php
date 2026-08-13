@@ -10,7 +10,7 @@ use RuntimeException;
 class LeadIdentityGenerator
 {
     /**
-     * @return array{name: string, phone: string, gender: string, first_name: string, middle_name: string, last_name: string, region: ?string, operator: ?string}
+     * @return array{name: string, phone: string, email: string, gender: string, first_name: string, middle_name: string, last_name: string, region: ?string, operator: ?string}
      */
     public function generateForSite(Site $site): array
     {
@@ -27,11 +27,47 @@ class LeadIdentityGenerator
             'first_name' => $firstName,
             'middle_name' => $usedMiddleName,
             'last_name' => $lastName,
+            'email' => $this->buildEmailFromName($firstName, $lastName),
             'gender' => $gender === PersonName::GENDER_MALE ? 'М' : 'Ж',
             'phone' => $phoneMeta['phone'],
             'region' => $site->region?->name,
             'operator' => $phoneMeta['operator'],
         ];
+    }
+
+    /**
+     * Email like ivan.petrov@ya.ru from transliterated first + last name.
+     */
+    public function buildEmailFromName(string $firstName, string $lastName): string
+    {
+        $local = trim($this->transliterateToLatin($firstName).'.'.$this->transliterateToLatin($lastName), '.');
+        if ($local === '' || $local === '.') {
+            $local = 'user'.random_int(1000, 9999);
+        }
+
+        return strtolower($local).'@ya.ru';
+    }
+
+    public function transliterateToLatin(string $value): string
+    {
+        $map = [
+            'а' => 'a', 'б' => 'b', 'в' => 'v', 'г' => 'g', 'д' => 'd', 'е' => 'e', 'ё' => 'e',
+            'ж' => 'zh', 'з' => 'z', 'и' => 'i', 'й' => 'y', 'к' => 'k', 'л' => 'l', 'м' => 'm',
+            'н' => 'n', 'о' => 'o', 'п' => 'p', 'р' => 'r', 'с' => 's', 'т' => 't', 'у' => 'u',
+            'ф' => 'f', 'х' => 'h', 'ц' => 'ts', 'ч' => 'ch', 'ш' => 'sh', 'щ' => 'sch',
+            'ъ' => '', 'ы' => 'y', 'ь' => '', 'э' => 'e', 'ю' => 'yu', 'я' => 'ya',
+            'А' => 'A', 'Б' => 'B', 'В' => 'V', 'Г' => 'G', 'Д' => 'D', 'Е' => 'E', 'Ё' => 'E',
+            'Ж' => 'Zh', 'З' => 'Z', 'И' => 'I', 'Й' => 'Y', 'К' => 'K', 'Л' => 'L', 'М' => 'M',
+            'Н' => 'N', 'О' => 'O', 'П' => 'P', 'Р' => 'R', 'С' => 'S', 'Т' => 'T', 'У' => 'U',
+            'Ф' => 'F', 'Х' => 'H', 'Ц' => 'Ts', 'Ч' => 'Ch', 'Ш' => 'Sh', 'Щ' => 'Sch',
+            'Ъ' => '', 'Ы' => 'Y', 'Ь' => '', 'Э' => 'E', 'Ю' => 'Yu', 'Я' => 'Ya',
+        ];
+
+        $latin = strtr($value, $map);
+        $latin = preg_replace('/[^a-zA-Z0-9]+/', '.', $latin) ?? '';
+        $latin = trim($latin, '.');
+
+        return $latin;
     }
 
     /**

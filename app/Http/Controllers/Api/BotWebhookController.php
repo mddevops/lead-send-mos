@@ -269,7 +269,7 @@ class BotWebhookController extends Controller
             if ($replaceAuto) {
                 FormMapping::query()
                     ->where('site_id', $site->id)
-                    ->where('mapping_type', 'auto')
+                    ->whereIn('mapping_type', ['auto', 'sibling'])
                     ->delete();
             }
 
@@ -363,21 +363,6 @@ class BotWebhookController extends Controller
         }
 
         $this->syncProxyStateFromRun($run);
-
-        $site = $run->site;
-        $campaignName = (string) ($run->campaign?->name ?? '');
-        if ($site) {
-            $heal = app(\App\Services\FormHealService::class);
-            if (str_starts_with($campaignName, 'Heal тест:')) {
-                $heal->recordHealTestOutcome($site, (string) $run->status);
-            } elseif (str_starts_with($campaignName, 'Автопайплайн #')) {
-                $heal->recordSubmitOutcome(
-                    $site,
-                    (string) $run->status,
-                    $this->looksLikeProxyFailure($run),
-                );
-            }
-        }
 
         return response()->json(['ok' => true]);
     }
@@ -489,8 +474,12 @@ class BotWebhookController extends Controller
         return [
             'source_url' => ['nullable', 'string'],
             'name_selector' => ['nullable', 'string'],
+            'first_name_selector' => ['nullable', 'string'],
+            'last_name_selector' => ['nullable', 'string'],
             'phone_selector' => ['required', 'string'],
             'email_selector' => ['nullable', 'string'],
+            'select_selectors' => ['nullable', 'array'],
+            'select_selectors.*' => ['string'],
             'message_selector' => ['nullable', 'string'],
             'submit_selector' => ['required', 'string'],
             'open_modal_selector' => ['nullable', 'string'],
@@ -554,6 +543,23 @@ class BotWebhookController extends Controller
             $nameSelector = null;
         }
 
+        foreach (['first_name_selector', 'last_name_selector', 'email_selector'] as $key) {
+            if (isset($data[$key]) && is_string($data[$key]) && trim($data[$key]) === '') {
+                $data[$key] = null;
+            }
+        }
+
+        $selectSelectors = $data['select_selectors'] ?? null;
+        if (is_array($selectSelectors)) {
+            $selectSelectors = array_values(array_filter(
+                $selectSelectors,
+                fn (mixed $selector): bool => is_string($selector) && trim($selector) !== '',
+            ));
+            $data['select_selectors'] = $selectSelectors === [] ? null : $selectSelectors;
+        } else {
+            $data['select_selectors'] = null;
+        }
+
         $sourceUrl = $data['source_url'] ?? null;
         if (is_string($sourceUrl) && $sourceUrl !== '') {
             // Ad landings with long UTM/yclid must not blow varchar(255).
@@ -590,20 +596,7 @@ class BotWebhookController extends Controller
             'last_scan_at' => now(),
         ]);
 
-        $heal = app(\App\Services\FormHealService::class);
-        if (in_array($site->fresh()?->submit_heal_status, [
-            \App\Services\FormHealService::STATUS_RESCANNING,
-            \App\Services\FormHealService::STATUS_PAUSED,
-        ], true)) {
-            try {
-                $heal->afterScanMappingsSaved($site->fresh());
-            } catch (\Throwable $e) {
-                Log::warning('form_heal.after_scan_failed', [
-                    'site_id' => $site->id,
-                    'error' => $e->getMessage(),
-                ]);
-            }
-        } elseif ($hasActive) {
+        if ($hasActive) {
             try {
                 app(DailyPipelineService::class)->refreshPipelinesContainingSite((int) $site->id);
             } catch (\Throwable $e) {

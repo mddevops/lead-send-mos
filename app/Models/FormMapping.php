@@ -14,8 +14,11 @@ class FormMapping extends Model
         'site_id',
         'source_url',
         'name_selector',
+        'first_name_selector',
+        'last_name_selector',
         'phone_selector',
         'email_selector',
+        'select_selectors',
         'message_selector',
         'submit_selector',
         'open_modal_selector',
@@ -55,6 +58,7 @@ class FormMapping extends Model
             'submit_coordinates' => 'array',
             'consent_checkbox_selectors' => 'array',
             'pre_form_click_selectors' => 'array',
+            'select_selectors' => 'array',
             'confidence' => 'decimal:2',
         ];
     }

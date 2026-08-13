@@ -267,6 +267,9 @@ class ViewDailyPipelineRun extends ViewRecord implements HasTable
                                 'runId' => $run->id,
                                 'url' => SubmitLeadPayloadBuilder::submitUrl($record, $mapping),
                                 'name' => $identity['name'],
+                                'first_name' => $identity['first_name'],
+                                'last_name' => $identity['last_name'],
+                                'email' => $identity['email'],
                                 'phone' => $identity['phone'],
                                 'region' => SubmitLeadPayloadBuilder::regionArray($record),
                                 'screenshotConfig' => [

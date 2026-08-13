@@ -25,6 +25,10 @@ type EntryPoint = {
 type RawDetectedForm = {
   formScopeSelector: string | null;
   nameSelector: string | null;
+  firstNameSelector?: string | null;
+  lastNameSelector?: string | null;
+  emailSelector?: string | null;
+  selectSelectors?: string[];
   phoneSelector: string;
   submitSelector: string;
   consentCheckboxSelectors: string[];
@@ -201,6 +205,10 @@ function toDetectedForm(
   return {
     source_url: sourceUrl,
     name_selector: raw.nameSelector,
+    first_name_selector: raw.firstNameSelector ?? null,
+    last_name_selector: raw.lastNameSelector ?? null,
+    email_selector: raw.emailSelector ?? null,
+    select_selectors: (raw.selectSelectors ?? []).length > 0 ? raw.selectSelectors ?? null : null,
     phone_selector: raw.phoneSelector,
     submit_selector: raw.submitSelector,
     consent_checkbox_selector: raw.consentCheckboxSelectors[0] ?? null,
@@ -269,6 +277,10 @@ export async function discoverFormsViaQuiz(
       forms: Array<{
         formScopeSelector: string | null;
         nameSelector: string | null;
+        firstNameSelector?: string | null;
+        lastNameSelector?: string | null;
+        emailSelector?: string | null;
+        selectSelectors?: string[];
         phoneSelector: string;
         submitSelector: string;
         consentCheckboxSelectors: string[];
@@ -282,6 +294,10 @@ export async function discoverFormsViaQuiz(
         {
           formScopeSelector: form.formScopeSelector,
           nameSelector: form.nameSelector,
+          firstNameSelector: form.firstNameSelector ?? null,
+          lastNameSelector: form.lastNameSelector ?? null,
+          emailSelector: form.emailSelector ?? null,
+          selectSelectors: form.selectSelectors ?? [],
           phoneSelector: form.phoneSelector,
           submitSelector: form.submitSelector,
           consentCheckboxSelectors: form.consentCheckboxSelectors ?? [],
@@ -458,6 +474,13 @@ async function collectFormsFromOpenModal(
       /ваш\s+номер\s+телефона|номер\s+телефона|ваш\s+телефон|телефон\*?|phone|\+7(?:\s|\(|_)|8\s*\(\s*_|\+\s*7/i;
     const NAME_PLACEHOLDER_RE =
       /ваше\s+имя|введите\s+имя|^имя\*?$|(?:^|[\s:])имя(?:\s|\*|$)|\bимя\b|ф\.?\s*и\.?\s*о\.?|фио|fio|first\s*name|your\s+name|фамил|отчество/i;
+    const FIRST_NAME_RE =
+      /(?:^|[_-\s])(first.?name|firstname|given.?name|имя)(?:$|[_-\s*])|^имя\*?$|ваше\s+имя|введите\s+имя/i;
+    const LAST_NAME_RE =
+      /(?:^|[_-\s])(last.?name|lastname|family.?name|surname|фамил)(?:$|[_-\s*])|^фамил\w*\*?$|ваша\s+фамил/i;
+    const EMAIL_FIELD_RE = /e-?mail|почта|электронн\w*\s+почт/i;
+    const FILLABLE_SELECT_RE =
+      /дилер|dealer|модель|model|авто|машин|салон|офис|город|city|когда|перезвон|время|call.?time|марка|brand/i;
     const SKIP_INPUT_TYPES = new Set(['hidden', 'submit', 'button', 'checkbox', 'radio', 'file', 'image', 'reset', 'password', 'email', 'number', 'range', 'date', 'color']);
     const NON_LEAD_PHONE_RE = /\b(vin|year|email|mileage|пробег|год|инн)\b/i;
     const SUBMIT_TEXT_RE =
@@ -596,10 +619,73 @@ async function collectFormsFromOpenModal(
       return PHONE_PLACEHOLDER_RE.test(placeholder) || PHONE_PLACEHOLDER_RE.test(context);
     }
 
+    function isEmailField(input: HTMLInputElement): boolean {
+      const type = (input.getAttribute('type') || 'text').toLowerCase();
+      if (type === 'email') {
+        return true;
+      }
+      if (SKIP_INPUT_TYPES.has(type) || type === 'tel' || isPhoneField(input)) {
+        return false;
+      }
+
+      const context = inputContext(input);
+      const name = (input.getAttribute('name') || '').trim();
+      const id = (input.id || '').trim();
+      const placeholder = (input.getAttribute('placeholder') || '').trim();
+
+      return EMAIL_FIELD_RE.test(name) || EMAIL_FIELD_RE.test(id) || EMAIL_FIELD_RE.test(placeholder) || EMAIL_FIELD_RE.test(context);
+    }
+
+    function isFirstNameField(input: HTMLInputElement): boolean {
+      const type = (input.getAttribute('type') || 'text').toLowerCase();
+      if (SKIP_INPUT_TYPES.has(type) || type === 'tel' || type === 'email' || isPhoneField(input) || isEmailField(input)) {
+        return false;
+      }
+
+      const autocomplete = (input.getAttribute('autocomplete') || '').toLowerCase();
+      if (autocomplete === 'given-name') {
+        return true;
+      }
+
+      const context = inputContext(input);
+      const name = (input.getAttribute('name') || '').trim();
+      const id = (input.id || '').trim();
+      const placeholder = (input.getAttribute('placeholder') || '').trim();
+
+      if (LAST_NAME_RE.test(name) || LAST_NAME_RE.test(id) || LAST_NAME_RE.test(placeholder) || LAST_NAME_RE.test(context)) {
+        return false;
+      }
+
+      return FIRST_NAME_RE.test(name) || FIRST_NAME_RE.test(id) || FIRST_NAME_RE.test(placeholder) || FIRST_NAME_RE.test(context);
+    }
+
+    function isLastNameField(input: HTMLInputElement): boolean {
+      const type = (input.getAttribute('type') || 'text').toLowerCase();
+      if (SKIP_INPUT_TYPES.has(type) || type === 'tel' || type === 'email' || isPhoneField(input) || isEmailField(input)) {
+        return false;
+      }
+
+      const autocomplete = (input.getAttribute('autocomplete') || '').toLowerCase();
+      if (autocomplete === 'family-name') {
+        return true;
+      }
+
+      const context = inputContext(input);
+      const name = (input.getAttribute('name') || '').trim();
+      const id = (input.id || '').trim();
+      const placeholder = (input.getAttribute('placeholder') || '').trim();
+
+      return LAST_NAME_RE.test(name) || LAST_NAME_RE.test(id) || LAST_NAME_RE.test(placeholder) || LAST_NAME_RE.test(context);
+    }
+
     function isNameField(input: HTMLInputElement): boolean {
       const type = (input.getAttribute('type') || 'text').toLowerCase();
 
-      if (SKIP_INPUT_TYPES.has(type) || type === 'tel' || type === 'email' || isPhoneField(input)) {
+      if (SKIP_INPUT_TYPES.has(type) || type === 'tel' || type === 'email' || isPhoneField(input) || isEmailField(input)) {
+        return false;
+      }
+
+      if (isFirstNameField(input) || isLastNameField(input)) {
         return false;
       }
 
@@ -612,7 +698,7 @@ async function collectFormsFromOpenModal(
       const name = (input.getAttribute('name') || '').trim();
       const id = (input.id || '').trim();
 
-      if (/^name$/i.test(name) || /(?:^|[_-])(name|fio|имя)(?:$|[_-])/i.test(name) || /(name|fio|firstname|first_name)$/i.test(id)) {
+      if (/^name$/i.test(name) || /(?:^|[_-])(name|fio|имя)(?:$|[_-])/i.test(name) || /(name|fio)$/i.test(id)) {
         return true;
       }
 
@@ -657,7 +743,7 @@ async function collectFormsFromOpenModal(
           return true;
         }
 
-        if (isPhoneField(input) || isNameField(input)) {
+        if (isPhoneField(input) || isNameField(input) || isFirstNameField(input) || isLastNameField(input) || isEmailField(input)) {
           return true;
         }
 
@@ -698,40 +784,18 @@ async function collectFormsFromOpenModal(
           input.getAttribute('name') || '',
           input.getAttribute('id') || '',
           inputContext(input as unknown as HTMLInputElement),
-          [...input.options].slice(0, 5).map((opt) => opt.textContent || '').join(' '),
+          [...input.options].slice(0, 8).map((opt) => opt.textContent || '').join(' '),
         ].join(' ');
 
-        if (/перезвон|когда\s+звон|время\s+звон|удобн\w*\s+врем|call.?time|callback.?time/i.test(context)) {
-          return true;
-        }
-
-        // Trade-in: optional year / gearbox selects next to phone.
-        if (/год|year|кпп|коробк|transmission|марка|модель|brand|model/i.test(context) && !fieldLooksRequired(input)) {
-          return true;
-        }
-
-        return false;
+        return /перезвон|когда\s+звон|время\s+звон|удобн\w*\s+врем|call.?time|callback.?time/i.test(context)
+          || FILLABLE_SELECT_RE.test(context)
+          || fieldLooksRequired(input);
       }
 
       return false;
     }
 
     function hasDisqualifyingExtraFields(root: Element): boolean {
-      const carPicker = root.querySelector(
-        '[class*="car-select"], [class*="select-car"], [class*="pick-car"], [data-car], [data-vehicle], select[name*="car"], select[name*="model"]',
-      );
-
-      if (carPicker && isVisible(carPicker)) {
-        return true;
-      }
-
-      const controlWithCar = [...root.querySelectorAll('button, label, select, [role="button"], .form__field, [class*="field"]')]
-        .some((el) => /выбрать\s+автомобил|выбор\s+автомобил|укажите\s+автомобил|выберите\s+(авто|машин|модель)/i.test(el.textContent || ''));
-
-      if (controlWithCar) {
-        return true;
-      }
-
       for (const node of root.querySelectorAll('input, textarea, select')) {
         if (!(node instanceof HTMLInputElement || node instanceof HTMLTextAreaElement || node instanceof HTMLSelectElement)) {
           continue;
@@ -742,6 +806,10 @@ async function collectFormsFromOpenModal(
 
           if (type === 'hidden' || type === 'submit' || type === 'button' || type === 'reset' || type === 'image' || type === 'checkbox' || type === 'radio' || type === 'range') {
             continue;
+          }
+
+          if (type === 'password') {
+            return true;
           }
         }
 
@@ -757,25 +825,82 @@ async function collectFormsFromOpenModal(
           ? inputContext(node)
           : `${(node as HTMLElement).getAttribute('name') || ''} ${(node as HTMLElement).getAttribute('placeholder') || ''} ${node.textContent || ''}`.replace(/\s+/g, ' ');
 
-        const looksBusinessField =
-          /(?:^|[_-\s])(email|почт|город|city|адрес|address|авто|машин|модель|model|car|марка|brand|vin|пробег|год|year|время|date|дат[аы]|прибыт|визит|офис|салон|комментар|message)(?:$|[_-\s])/i.test(context)
-          || (node instanceof HTMLSelectElement)
-          || (node instanceof HTMLInputElement && (node.getAttribute('type') || '').toLowerCase() === 'email');
+        const looksUnsupported =
+          /(?:^|[_-\s])(адрес|address|vin|пробег|инн|паспорт|комментар|message|отзыв)(?:$|[_-\s])/i.test(context)
+          || (node instanceof HTMLTextAreaElement && fieldLooksRequired(node));
 
-        if (fieldLooksRequired(node) || looksBusinessField) {
+        if (looksUnsupported && fieldLooksRequired(node)) {
           return true;
         }
 
         if (node instanceof HTMLInputElement || node instanceof HTMLTextAreaElement) {
-          return true;
+          if (node instanceof HTMLInputElement) {
+            const type = (node.getAttribute('type') || 'text').toLowerCase();
+            if (type === 'email') {
+              continue;
+            }
+          }
+
+          if (fieldLooksRequired(node)) {
+            return true;
+          }
         }
       }
 
       return false;
     }
 
+    function buildSelectSelector(select: HTMLSelectElement): string | null {
+      if (select.id && isStableElementId(select.id)) {
+        return `#${cssEscape(select.id)}`;
+      }
+
+      const name = select.getAttribute('name');
+      if (name) {
+        return `select[name="${cssEscapeAttribute(name)}"]`;
+      }
+
+      const className = typeof select.className === 'string'
+        ? select.className.trim().split(/\s+/).find((token) => token.length > 2 && token.length < 40)
+        : null;
+      if (className) {
+        return `select.${cssEscape(className)}`;
+      }
+
+      return 'select';
+    }
+
+    function collectFillableSelectSelectors(root: Element): string[] {
+      const result: string[] = [];
+      for (const node of root.querySelectorAll('select')) {
+        if (!(node instanceof HTMLSelectElement) || !isVisible(node)) {
+          continue;
+        }
+
+        const context = [
+          node.getAttribute('name') || '',
+          node.id || '',
+          inputContext(node as unknown as HTMLInputElement),
+          [...node.options].slice(0, 8).map((opt) => opt.textContent || '').join(' '),
+        ].join(' ');
+
+        if (
+          FILLABLE_SELECT_RE.test(context)
+          || fieldLooksRequired(node)
+          || /перезвон|когда\s+звон|call.?time/i.test(context)
+        ) {
+          const selector = buildSelectSelector(node);
+          if (selector) {
+            result.push(selector);
+          }
+        }
+      }
+
+      return [...new Set(result)];
+    }
+
     function buildInputSelector(input: HTMLInputElement): string | null {
-      if (input.id && isStableElementId(input.id) && /^(phone|tel|telephone|mobile|name|fio)$/i.test(input.id)) {
+      if (input.id && isStableElementId(input.id) && /^(phone|tel|telephone|mobile|name|fio|email|firstname|lastname|first_name|last_name)$/i.test(input.id)) {
         return `#${cssEscape(input.id)}`;
       }
 
@@ -1006,6 +1131,10 @@ async function collectFormsFromOpenModal(
       }
 
       const nameInput = inputs.find((input) => input !== phoneInput && isNameField(input)) ?? null;
+      const firstNameInput = inputs.find((input) => input !== phoneInput && isFirstNameField(input)) ?? null;
+      const lastNameInput = inputs.find((input) => input !== phoneInput && input !== firstNameInput && isLastNameField(input)) ?? null;
+      const emailInput = inputs.find((input) => isEmailField(input)) ?? null;
+      const selectSelectors = collectFillableSelectSelectors(root);
       const checkboxes = [...root.querySelectorAll('input[type="checkbox"]')].filter(
         (el): el is HTMLInputElement => el instanceof HTMLInputElement && isVisible(el),
       );
@@ -1017,7 +1146,7 @@ async function collectFormsFromOpenModal(
 
       let score = SCORE_PHONE + SCORE_SUBMIT;
 
-      if (nameInput) {
+      if (nameInput || firstNameInput || lastNameInput) {
         score += SCORE_NAME;
       }
 
@@ -1033,13 +1162,21 @@ async function collectFormsFromOpenModal(
         ? buildScope(root)
         : buildFormlessScope(root);
 
+      const firstNameSelector = firstNameInput ? buildInputSelector(firstNameInput) : null;
+      const lastNameSelector = lastNameInput ? buildInputSelector(lastNameInput) : null;
+      const emailSelector = emailInput ? buildInputSelector(emailInput) : null;
+
       results.push({
         formScopeSelector,
         nameSelector: nameInput ? buildInputSelector(nameInput) : null,
+        firstNameSelector,
+        lastNameSelector,
+        emailSelector,
+        selectSelectors,
         phoneSelector,
         submitSelector: buildSubmitSelector(submitButton),
         consentCheckboxSelectors: checkboxes.map((checkbox) => buildCheckboxSelector(checkbox)),
-        fingerprint: `${formScopeSelector}|${phoneSelector}|modal-only`,
+        fingerprint: `${formScopeSelector}|${phoneSelector}|modal-only|${firstNameSelector ?? ''}|${lastNameSelector ?? ''}|${emailSelector ?? ''}`,
         score,
       });
     }

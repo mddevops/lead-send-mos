@@ -3,16 +3,12 @@
 namespace App\Filament\Resources\Sites\Tables;
 
 use App\Filament\Resources\Sites\Pages\ManualSiteMapping;
-use App\Models\BotTask;
-use App\Models\Campaign;
-use App\Models\CampaignSiteRun;
-use App\Models\ProjectSetting;
 use App\Models\Site;
 use App\Services\DailyPipelineService;
-use App\Services\LeadIdentityGenerator;
 use App\Support\DataSyncFilamentActions;
-use App\Support\ProxyPicker;
+use App\Support\ScanFormLauncher;
 use App\Support\SubmitLeadPayloadBuilder;
+use App\Support\TestFormSubmitEnqueuer;
 use Filament\Actions\Action;
 use Filament\Actions\BulkAction;
 use Filament\Actions\BulkActionGroup;
@@ -27,7 +23,6 @@ use Filament\Tables\Filters\SelectFilter;
 use Filament\Tables\Filters\TernaryFilter;
 use Filament\Tables\Table;
 use Illuminate\Database\Eloquent\Collection;
-use Illuminate\Support\Facades\Auth;
 use Throwable;
 
 class SitesTable
@@ -68,30 +63,6 @@ class SitesTable
                     ->label('Телефон')
                     ->searchable()
                     ->toggleable(isToggledHiddenByDefault: true),
-                TextColumn::make('business_status')
-                    ->label('Организация')
-                    ->badge()
-                    ->formatStateUsing(fn (?string $state): string => match ($state) {
-                        'open' => 'Открыто',
-                        'closed' => 'Закрыто',
-                        default => $state ?? '—',
-                    })
-                    ->color(fn (?string $state): string => match ($state) {
-                        'open' => 'success',
-                        'closed' => 'danger',
-                        default => 'gray',
-                    })
-                    ->toggleable(isToggledHiddenByDefault: true),
-                TextColumn::make('rating_count')
-                    ->label('Количество отзывов')
-                    ->numeric()
-                    ->sortable()
-                    ->placeholder('—'),
-                TextColumn::make('rating_value')
-                    ->label('Рейтинг')
-                    ->formatStateUsing(fn ($state): string => $state === null ? '—' : number_format((float) $state, 1))
-                    ->sortable()
-                    ->placeholder('—'),
                 TextColumn::make('status')
                     ->label('Статус')
                     ->badge()
@@ -104,28 +75,6 @@ class SitesTable
                         'disabled' => 'Отключён',
                         default => $state,
                     }),
-                TextColumn::make('submit_heal_status')
-                    ->label('Автолечение')
-                    ->badge()
-                    ->placeholder('—')
-                    ->formatStateUsing(fn (?string $state): string => match ($state) {
-                        'paused_remap' => 'Пауза (ошибки)',
-                        'rescanning' => 'Рескан формы',
-                        'testing' => 'Тест новой формы',
-                        'failed_heal' => 'Лечение не удалось',
-                        default => $state ? (string) $state : '—',
-                    })
-                    ->color(fn (?string $state): string => match ($state) {
-                        'testing', 'rescanning' => 'warning',
-                        'paused_remap' => 'danger',
-                        'failed_heal' => 'gray',
-                        default => 'gray',
-                    })
-                    ->toggleable(),
-                TextColumn::make('submit_fail_streak')
-                    ->label('Ошибки подряд')
-                    ->alignRight()
-                    ->toggleable(isToggledHiddenByDefault: true),
                 TextColumn::make('last_scan_at')
                     ->label('Последнее сканирование')
                     ->dateTime()
@@ -159,50 +108,31 @@ class SitesTable
                     ->icon('heroicon-o-magnifying-glass')
                     ->requiresConfirmation()
                     ->action(function (Site $record): void {
-                        $proxy = ProxyPicker::pick();
-                        if ($proxy === null) {
-                            app(\App\Services\DailyPipelineService::class)->notifyNoProxy('Скан форм не запущен (админка).');
+                        $result = ScanFormLauncher::reuseOrEnqueue($record);
 
+                        if ($result['mode'] === 'reused') {
+                            $info = $result['result'];
                             Notification::make()
-                                ->title('Нет доступного proxy')
-                                ->body('Скан форм без proxy не запускается.')
+                                ->title('Маппинг взят с поддомена')
+                                ->body("Донор #{$info['donor_id']} ({$info['donor_name']}), домен {$info['parent_domain']}, форм: {$info['mappings_count']}. Скан не нужен.")
+                                ->success()
+                                ->send();
+
+                            return;
+                        }
+
+                        if ($result['mode'] === 'error') {
+                            Notification::make()
+                                ->title($result['title'])
+                                ->body($result['body'])
                                 ->danger()
                                 ->send();
 
                             return;
                         }
 
-                        $settings = ProjectSetting::query()->first();
-
-                        $task = BotTask::query()->create([
-                            'type' => 'scan_form',
-                            'status' => 'queued',
-                            'site_id' => $record->id,
-                            'payload' => [
-                                'taskId' => null, // filled after create
-                                'siteId' => $record->id,
-                                'url' => $record->url,
-                                'maxFormMappings' => max(1, min(10, (int) ($settings?->max_form_mappings_per_site ?? 5))),
-                                'proxy' => ProxyPicker::toPayload($proxy),
-                                'proxyConfig' => ProxyPicker::configFromSettings($settings),
-                            ],
-                        ]);
-
-                        $task->update([
-                            'payload' => [
-                                ...($task->payload ?? []),
-                                'taskId' => $task->id,
-                            ],
-                        ]);
-
-                        ProxyPicker::markUsed($proxy);
-
-                        $record->update([
-                            'status' => 'scanning',
-                        ]);
-
                         Notification::make()
-                            ->title("Задача scan_form #{$task->id} поставлена в очередь")
+                            ->title("Задача scan_form #{$result['task_id']} поставлена в очередь")
                             ->success()
                             ->send();
                     }),
@@ -218,26 +148,6 @@ class SitesTable
                     ->modalSubmitActionLabel('Проверить')
                     ->requiresConfirmation()
                     ->action(function (Site $record): void {
-                        if ($record->status === 'disabled') {
-                            Notification::make()
-                                ->title('Сайт отключён')
-                                ->body('Включите сайт перед тестовой отправкой.')
-                                ->warning()
-                                ->send();
-
-                            return;
-                        }
-
-                        if ($record->status !== 'ready') {
-                            Notification::make()
-                                ->title('Сайт не готов')
-                                ->body('Сначала выполните сканирование или ручной маппинг.')
-                                ->warning()
-                                ->send();
-
-                            return;
-                        }
-
                         $mapping = SubmitLeadPayloadBuilder::pickMapping($record);
                         if (! $mapping) {
                             Notification::make()
@@ -249,84 +159,24 @@ class SitesTable
                             return;
                         }
 
-                        try {
-                            $identity = app(LeadIdentityGenerator::class)->generateForSite($record);
-                        } catch (Throwable $e) {
+                        $result = TestFormSubmitEnqueuer::enqueue($record, $mapping);
+
+                        if (! $result['ok']) {
                             Notification::make()
-                                ->title('Не удалось сгенерировать имя/телефон')
-                                ->body($e->getMessage())
-                                ->danger()
+                                ->title($result['title'])
+                                ->body($result['body'])
+                                ->warning()
                                 ->send();
 
                             return;
                         }
 
-                        $settings = ProjectSetting::query()->firstOrCreate([]);
-                        $proxy = ProxyPicker::pick();
-
-                        if ($proxy === null) {
-                            app(\App\Services\DailyPipelineService::class)->notifyNoProxy('Тестовая отправка не запущена (админка).');
-
-                            Notification::make()
-                                ->title('Нет доступного proxy')
-                                ->body('Отправка без proxy не запускается.')
-                                ->danger()
-                                ->send();
-
-                            return;
-                        }
-
-                        $campaign = Campaign::query()->create([
-                            'name' => "Тест отправки: {$record->name}",
-                            'phone' => $identity['phone'],
-                            'source' => 'web',
-                            'status' => 'queued',
-                            'total_sites' => 1,
-                            'created_by' => Auth::id(),
-                        ]);
-
-                        $run = CampaignSiteRun::query()->create([
-                            'campaign_id' => $campaign->id,
-                            'site_id' => $record->id,
-                            'proxy_id' => $proxy->id,
-                            'status' => 'pending',
-                        ]);
-
-                        $task = BotTask::query()->create([
-                            'type' => 'submit_lead',
-                            'status' => 'queued',
-                            'campaign_site_run_id' => $run->id,
-                            'site_id' => $record->id,
-                            'payload' => [
-                                'taskId' => null,
-                                'runId' => $run->id,
-                                'url' => SubmitLeadPayloadBuilder::submitUrl($record, $mapping),
-                                'name' => $identity['name'],
-                                'phone' => $identity['phone'],
-                                'region' => SubmitLeadPayloadBuilder::regionArray($record),
-                                'screenshotConfig' => [
-                                    'enabled' => false,
-                                ],
-                                'mapping' => SubmitLeadPayloadBuilder::mappingArray($mapping),
-                                'proxy' => ProxyPicker::toPayload($proxy),
-                                'proxyConfig' => ProxyPicker::configFromSettings($settings),
-                            ],
-                        ]);
-
-                        $task->update([
-                            'payload' => [
-                                ...($task->payload ?? []),
-                                'taskId' => $task->id,
-                            ],
-                        ]);
-
-                        ProxyPicker::markUsed($proxy);
-
-                        $operator = $identity['operator'] ? ", {$identity['operator']}" : '';
+                        $identity = $result['identity'];
+                        $operator = ! empty($identity['operator']) ? ", {$identity['operator']}" : '';
                         $region = $identity['region'] ?? '—';
 
                         Notification::make()
-                            ->title("Тестовая отправка поставлена в очередь (#{$task->id})")
+                            ->title("Тестовая отправка поставлена в очередь (#{$result['task_id']})")
                             ->body("{$identity['gender']}: {$identity['name']}, тел. {$identity['phone']} ({$region}{$operator})")
                             ->success()
                             ->send();

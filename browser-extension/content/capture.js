@@ -1,12 +1,31 @@
 (() => {
-  if (window.__leadSendFormMapperLoaded) return;
+  const EXT_VERSION = '1.3.1';
+
+  // After chrome://extensions → Reload, old content script stays until reinject/F5.
+  if (window.__leadSendFormMapperVersion === EXT_VERSION && window.__leadSendFormMapperLoaded) {
+    return;
+  }
+
+  if (typeof window.__leadSendFormMapperCleanup === 'function') {
+    try {
+      window.__leadSendFormMapperCleanup();
+    } catch {
+      // ignore teardown errors from previous version
+    }
+  }
+
   window.__leadSendFormMapperLoaded = true;
+  window.__leadSendFormMapperVersion = EXT_VERSION;
 
   const ROLES = [
     { id: 'open_modal', label: 'Открыть модалку', required: false },
     { id: 'pre_click', label: 'Шаг квиза', required: false, multi: true },
     { id: 'phone', label: 'Телефон', required: true },
-    { id: 'name', label: 'Имя', required: false },
+    { id: 'first_name', label: 'Имя (отдельное)', required: false },
+    { id: 'last_name', label: 'Фамилия (отдельное)', required: false },
+    { id: 'name', label: 'ФИО (одно поле)', required: false },
+    { id: 'email', label: 'Email', required: false },
+    { id: 'select', label: 'Select (рандом)', required: false, multi: true },
     { id: 'submit', label: 'Submit', required: true },
     { id: 'consent_1', label: 'Чекбокс 1', required: false },
     { id: 'consent_2', label: 'Чекбокс 2', required: false },
@@ -29,7 +48,11 @@
     return {
       source_url: location.href,
       phone_selector: null,
+      first_name_selector: null,
+      last_name_selector: null,
       name_selector: null,
+      email_selector: null,
+      select_selectors: [],
       submit_selector: null,
       open_modal_selector: null,
       pre_form_click_selectors: [],
@@ -330,7 +353,7 @@
     overlay.id = 'lsfm-overlay';
     overlay.innerHTML = `
       <div class="lsfm-bar">
-        <div class="lsfm-title">Form Mapper · Alt+Space вкл/выкл · Alt+клик = обычный клик</div>
+        <div class="lsfm-title">Form Mapper v${EXT_VERSION} · Alt+Space вкл/выкл · Alt+клик = обычный клик</div>
         <div class="lsfm-role" id="lsfm-role"></div>
         <div class="lsfm-roles" id="lsfm-roles"></div>
         <div class="lsfm-actions">
@@ -405,7 +428,11 @@
       `open_modal: ${draft.open_modal_selector || '—'}`,
       `квиз: ${quizSteps.length ? quizSteps.map((s, i) => `${i + 1}`).join('→') + ` (${quizSteps.length})` : '—'}`,
       `phone: ${draft.phone_selector || '—'}`,
-      `name: ${draft.name_selector || '—'}`,
+      `first: ${draft.first_name_selector || '—'}`,
+      `last: ${draft.last_name_selector || '—'}`,
+      `fio: ${draft.name_selector || '—'}`,
+      `email: ${draft.email_selector || '—'}`,
+      `selects: ${(draft.select_selectors || []).length}`,
       `submit: ${draft.submit_selector || '—'}`,
       `чекбокс1: ${consents[0] || '—'}`,
       `чекбокс2: ${consents[1] || '—'}`,
@@ -424,13 +451,23 @@
 
   function assignRole(el) {
     const role = ROLES[roleIndex];
-    const scopedRoles = new Set(['phone', 'name', 'submit', 'consent_1', 'consent_2', 'form_scope']);
+    const scopedRoles = new Set(['phone', 'first_name', 'last_name', 'name', 'email', 'select', 'submit', 'consent_1', 'consent_2', 'form_scope']);
 
     let targetEl = el;
     if (CONSENT_ROLE_IDS.has(role.id)) {
       const resolved = resolveConsentElement(el);
       if (!resolved) return;
       targetEl = resolved;
+    }
+
+    // Prefer stable react-select control over ephemeral value-container/--has-value.
+    if (role.id === 'select' && targetEl instanceof Element) {
+      const control = targetEl.closest('[class*="react-select__control"], [class*="Select__control"]')
+        || (targetEl.matches?.('select') ? targetEl : targetEl.closest('select'))
+        || targetEl.querySelector?.('[class*="react-select__control"], [class*="Select__control"], select');
+      if (control instanceof Element) {
+        targetEl = control;
+      }
     }
 
     let root = document;
@@ -459,7 +496,15 @@
     targetEl.classList.add('lsfm-picked');
 
     if (role.id === 'phone') draft.phone_selector = selector;
+    if (role.id === 'first_name') draft.first_name_selector = selector;
+    if (role.id === 'last_name') draft.last_name_selector = selector;
     if (role.id === 'name') draft.name_selector = selector;
+    if (role.id === 'email') draft.email_selector = selector;
+    if (role.id === 'select') {
+      if (!Array.isArray(draft.select_selectors)) draft.select_selectors = [];
+      if (!draft.select_selectors.includes(selector)) draft.select_selectors.push(selector);
+    }
+    if (role.id === 'submit') draft.submit_selector = selector;
     if (role.id === 'submit') draft.submit_selector = selector;
     if (role.id === 'open_modal') draft.open_modal_selector = selector;
     if (role.id === 'pre_click') {
@@ -587,6 +632,12 @@
       source_url: formPayload.source_url || origin,
       source_urls: [formPayload.source_url || origin].filter(Boolean),
       name_selector: formPayload.name_selector || null,
+      first_name_selector: formPayload.first_name_selector || null,
+      last_name_selector: formPayload.last_name_selector || null,
+      email_selector: formPayload.email_selector || null,
+      select_selectors: Array.isArray(formPayload.select_selectors)
+        ? formPayload.select_selectors.filter((s) => Boolean(s && String(s).trim()))
+        : [],
       phone_selector: formPayload.phone_selector || null,
       submit_selector: formPayload.submit_selector || null,
       open_modal_selector: formPayload.open_modal_selector || null,
@@ -799,4 +850,20 @@
   document.addEventListener('keydown', onKeyDown, true);
   document.addEventListener('mouseover', onMouseOver, true);
   document.addEventListener('click', onClick, true);
+
+  window.__leadSendFormMapperCleanup = () => {
+    document.removeEventListener('keydown', onKeyDown, true);
+    document.removeEventListener('mouseover', onMouseOver, true);
+    document.removeEventListener('click', onClick, true);
+    stopSuccessWatch();
+    setHover(null);
+    if (overlay) {
+      overlay.remove();
+      overlay = null;
+    }
+    const toast = document.getElementById('lsfm-toast');
+    if (toast) toast.remove();
+    active = false;
+    window.__leadSendFormMapperLoaded = false;
+  };
 })();

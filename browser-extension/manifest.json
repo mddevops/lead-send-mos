@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Lead Send Form Mapper",
-  "version": "1.2.0",
-  "description": "Form Mapper: Шаг квиза (pre-form) + Чекбокс 1/2",
+  "version": "1.3.1",
+  "description": "Form Mapper: Имя/Фамилия/ФИО, Email, Select (в т.ч. react-select), квиз, чекбоксы",
   "permissions": ["storage", "activeTab", "scripting"],
   "host_permissions": ["<all_urls>"],
   "action": {

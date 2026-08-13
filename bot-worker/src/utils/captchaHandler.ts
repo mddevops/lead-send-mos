@@ -47,6 +47,10 @@ const CAPTCHA_DEFAULTS: Record<Exclude<CaptchaType, 'none'>, CaptchaDefaults> = 
       'iframe[src*="checkbox"]',
       'iframe[src*="smartcaptcha"]',
       'iframe[src*="captcha.yandex"]',
+      // Tilda hosts SmartCaptcha inside its own fullscreen captcha iframe.
+      'iframe[src*="forms.tildaapi.com"][src*="captcha"]',
+      'iframe[src*="tildaapi.com/procces/captcha"]',
+      'iframe[src*="/procces/captcha"]',
     ],
     checkboxSelectors: [
       '#js-button',
@@ -131,24 +135,46 @@ async function waitForToken(page: Page, formRoot: Locator, tokenSelectors: strin
       const onPage = page.locator(selector).first();
       const locator = (await inForm.count()) > 0 ? inForm : onPage;
 
-      if ((await locator.count()) === 0) {
+      if ((await locator.count()) > 0) {
+        const tagName = await locator.evaluate((el) => el.tagName.toLowerCase()).catch(() => '');
+
+        if (tagName === 'textarea') {
+          const text = await locator.inputValue().catch(() => '');
+
+          if (text.trim().length > 0) {
+            return true;
+          }
+        } else {
+          const value = await locator.inputValue().catch(() => '');
+
+          if (value.trim().length > 0) {
+            return true;
+          }
+        }
+      }
+    }
+
+    // Tilda SmartCaptcha keeps smart-token inside the captcha iframe, not the lead form.
+    for (const frame of page.frames()) {
+      if (frame === page.mainFrame()) {
         continue;
       }
 
-      const tagName = await locator.evaluate((el) => el.tagName.toLowerCase()).catch(() => '');
+      const tokenInFrame = await frame
+        .evaluate((selectors) => {
+          for (const selector of selectors) {
+            const el = document.querySelector(selector) as HTMLInputElement | HTMLTextAreaElement | null;
+            if (el && (el.value || '').trim().length > 0) {
+              return true;
+            }
+          }
 
-      if (tagName === 'textarea') {
-        const text = await locator.inputValue().catch(() => '');
+          return false;
+        }, tokenSelectors)
+        .catch(() => false);
 
-        if (text.trim().length > 0) {
-          return true;
-        }
-      } else {
-        const value = await locator.inputValue().catch(() => '');
-
-        if (value.trim().length > 0) {
-          return true;
-        }
+      if (tokenInFrame) {
+        return true;
       }
     }
 
@@ -171,8 +197,8 @@ async function findImageCaptchaOnRoot(root: Page | FrameLocator): Promise<ImageC
   const input = root.locator('input.Textinput-Control[name="rep"], input[name="rep"].Textinput-Control').first();
   const container = root.locator('.AdvancedCaptcha_image, .AdvancedCaptcha.AdvancedCaptcha_image').first();
 
-  const inputVisible = (await input.count()) > 0 && (await input.isVisible().catch(() => false));
-  const containerVisible = (await container.count()) > 0 && (await container.isVisible().catch(() => false));
+  const inputVisible = (await input.count()) > 0 && (await isLocatorOnScreen(input));
+  const containerVisible = (await container.count()) > 0 && (await isLocatorOnScreen(container));
 
   if (!inputVisible && !containerVisible) {
     return null;
@@ -185,7 +211,7 @@ async function findImageCaptchaOnRoot(root: Page | FrameLocator): Promise<ImageC
     return null;
   }
 
-  if (!(await image.isVisible().catch(() => false)) || !(await submit.isVisible().catch(() => false))) {
+  if (!(await isLocatorOnScreen(image)) || !(await isLocatorOnScreen(submit))) {
     return null;
   }
 
@@ -199,9 +225,44 @@ async function findImageCaptcha(page: Page, iframeSelectors: string[]): Promise<
     return onPage;
   }
 
-  const framesToTry = iframeSelectors.length > 0 ? iframeSelectors : ['iframe'];
+  const outerShells = [
+    'iframe[src*="/procces/captcha"]',
+    'iframe[src*="forms.tildaapi.com"][src*="captcha"]',
+    'iframe[src*="tildaapi.com/procces/captcha"]',
+  ];
+  const innerAdvanced = [
+    'iframe[data-testid="advanced-iframe"]',
+    'iframe[src*="advanced"]',
+    'iframe[src*="smartcaptcha"]',
+  ];
 
-  for (const iframeSelector of framesToTry) {
+  for (const outer of outerShells) {
+    if ((await page.locator(outer).count()) === 0) {
+      continue;
+    }
+
+    for (const inner of innerAdvanced) {
+      const nested = page.frameLocator(outer).frameLocator(inner);
+      const inNested = await findImageCaptchaOnRoot(nested);
+      if (inNested) {
+        return inNested;
+      }
+    }
+
+    const inOuter = await findImageCaptchaOnRoot(page.frameLocator(outer));
+    if (inOuter) {
+      return inOuter;
+    }
+  }
+
+  const framesToTry = [
+    ...iframeSelectors,
+    'iframe[src*="advanced"]',
+    'iframe[src*="smartcaptcha"]',
+    'iframe',
+  ];
+
+  for (const iframeSelector of [...new Set(framesToTry)]) {
     const iframeCount = await page.locator(iframeSelector).count();
 
     for (let index = 0; index < Math.min(iframeCount, 3); index += 1) {
@@ -214,6 +275,17 @@ async function findImageCaptcha(page: Page, iframeSelectors: string[]): Promise<
     }
   }
 
+  for (const frame of page.frames()) {
+    if (frame === page.mainFrame() || !/advanced\.|smartcaptcha\.yandexcloud/i.test(frame.url())) {
+      continue;
+    }
+
+    const inFrame = await findImageCaptchaOnRoot(frame as unknown as FrameLocator);
+    if (inFrame) {
+      return inFrame;
+    }
+  }
+
   return null;
 }
 
@@ -222,6 +294,10 @@ async function isImageCaptchaVisible(page: Page, iframeSelectors: string[]): Pro
 }
 
 async function extractCaptchaImageBase64(image: Locator): Promise<string> {
+  if (!(await isLocatorOnScreen(image))) {
+    throw new Error('Captcha image is off-screen / parked (not a real challenge)');
+  }
+
   const imageSrc = await image.getAttribute('src').catch(() => null);
 
   if (imageSrc?.startsWith('data:image')) {
@@ -268,24 +344,24 @@ async function extractCaptchaImageBase64(image: Locator): Promise<string> {
 
   const box = await image.boundingBox().catch(() => null);
 
-  if (box && box.width >= 8 && box.height >= 8) {
-    const pageBuffer = await image.page().screenshot({
-      timeout: 5000,
-      animations: 'disabled',
-      clip: {
-        x: Math.max(0, box.x),
-        y: Math.max(0, box.y),
-        width: Math.ceil(box.width),
-        height: Math.ceil(box.height),
-      },
-    });
-
-    logger.info({ bytes: pageBuffer.length }, 'Captcha image captured by page crop');
-
-    return pageBuffer.toString('base64');
+  if (!isOnScreenBox(box)) {
+    throw new Error('Unable to capture captcha image (off-screen box — refuse page crop)');
   }
 
-  throw new Error('Unable to capture captcha image (unstable element)');
+  const pageBuffer = await image.page().screenshot({
+    timeout: 5000,
+    animations: 'disabled',
+    clip: {
+      x: Math.max(0, box!.x),
+      y: Math.max(0, box!.y),
+      width: Math.ceil(box!.width),
+      height: Math.ceil(box!.height),
+    },
+  });
+
+  logger.info({ bytes: pageBuffer.length }, 'Captcha image captured by page crop');
+
+  return pageBuffer.toString('base64');
 }
 
 async function typeLikeHuman(input: Locator, text: string): Promise<void> {
@@ -334,8 +410,8 @@ async function solveYandexImageCaptcha(
     }
 
     // Page-crop of a disappearing widget is ~300 bytes garbage — do not burn RuCaptcha on it.
-    if (imageBase64.length < 1500) {
-      logger.warn({ attempt, bytes: imageBase64.length }, 'Captcha image too small — skip send to solver');
+    if (imageBase64.length < 1500 || await isMostlyBlankImageBase64(imageBase64)) {
+      logger.warn({ attempt, bytes: imageBase64.length }, 'Captcha image too small/blank — skip send to solver');
       if (await hasCaptchaToken(page, formRoot, tokenSelectors) || await isYandexCheckboxPassed(page, iframeSelectors)) {
         return true;
       }
@@ -518,6 +594,35 @@ async function trySolveYandexImageOrToken(
   return false;
 }
 
+/**
+ * Find the frame that actually hosts #js-button (often nested:
+ * page → forms.tildaapi.com/procces/captcha → smartcaptcha checkbox.ru).
+ */
+async function findFrameWithCaptchaCheckbox(page: Page): Promise<import('playwright').Frame | null> {
+  // Prefer deepest checkbox.ru / SmartCaptcha checkbox frames first.
+  const frames = [...page.frames()].reverse();
+
+  for (const frame of frames) {
+    if (frame === page.mainFrame()) {
+      continue;
+    }
+
+    const hasButton = await frame
+      .evaluate(() => {
+        return !!document.querySelector(
+          '#js-button, input.CheckboxCaptcha-Button, .CheckboxCaptcha-Button, [role="checkbox"].CheckboxCaptcha-Button',
+        );
+      })
+      .catch(() => false);
+
+    if (hasButton) {
+      return frame;
+    }
+  }
+
+  return null;
+}
+
 async function clickCaptchaCheckbox(page: Page, iframeSelectors: string[], checkboxSelectors: string[]): Promise<boolean> {
   const allSelectors = [...new Set([...YANDEX_CHECKBOX_SELECTORS, ...checkboxSelectors])];
 
@@ -527,7 +632,103 @@ async function clickCaptchaCheckbox(page: Page, iframeSelectors: string[], check
     return true;
   }
 
-  // 1) Page-level first — showcaptcha renders CheckboxCaptcha without iframe.
+  // 0) Most reliable for Tilda/Yandex: locate the frame that contains #js-button, then click.
+  const checkboxFrame = await findFrameWithCaptchaCheckbox(page);
+  if (checkboxFrame) {
+    const clicked = await checkboxFrame
+      .evaluate(() => {
+        const btn = document.querySelector(
+          '#js-button, input.CheckboxCaptcha-Button, .CheckboxCaptcha-Button, [role="checkbox"].CheckboxCaptcha-Button',
+        ) as HTMLElement | null;
+        if (!btn) {
+          return 'missing';
+        }
+        if (btn.getAttribute('aria-checked') === 'true') {
+          return 'already';
+        }
+
+        btn.scrollIntoView({ block: 'center', inline: 'center' });
+        btn.focus();
+        // SmartCaptcha listens to pointer/mouse sequence, not only .click().
+        for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click'] as const) {
+          btn.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: window }));
+        }
+        btn.click();
+        return 'clicked';
+      })
+      .catch(() => 'error');
+
+    if (clicked === 'already' || clicked === 'clicked') {
+      logger.info(
+        { frameUrl: checkboxFrame.url().slice(0, 160), clicked },
+        'Captcha checkbox clicked in nested frame (#js-button)',
+      );
+      await page.waitForTimeout(randomPause(1000, 1800));
+      return true;
+    }
+
+    // Fallback: Playwright ElementHandle click (real CDP mouse).
+    const handle = await checkboxFrame.$('#js-button, .CheckboxCaptcha-Button').catch(() => null);
+    if (handle) {
+      await handle.click({ timeout: 8000, force: true }).catch(() => undefined);
+      logger.info(
+        { frameUrl: checkboxFrame.url().slice(0, 160) },
+        'Captcha checkbox clicked via ElementHandle',
+      );
+      await page.waitForTimeout(randomPause(1000, 1800));
+      return true;
+    }
+  }
+
+  // 1) Nested frameLocator: Tilda captcha shell → Yandex checkbox iframe → #js-button
+  const outerShellSelectors = [
+    'iframe[src*="/procces/captcha"]',
+    'iframe[src*="forms.tildaapi.com"][src*="captcha"]',
+    'iframe[src*="tildaapi.com/procces/captcha"]',
+    ...iframeSelectors,
+  ];
+  const innerCheckboxIframeSelectors = [
+    'iframe[data-testid="checkbox-iframe"]',
+    'iframe[title*="SmartCaptcha" i]',
+    'iframe[src*="checkbox.ru"]',
+    'iframe[src*="checkbox"]',
+    'iframe[src*="smartcaptcha"]',
+  ];
+
+  for (const outer of [...new Set(outerShellSelectors)]) {
+    if ((await page.locator(outer).count()) === 0) {
+      continue;
+    }
+
+    for (const inner of innerCheckboxIframeSelectors) {
+      const nested = page.frameLocator(outer).frameLocator(inner);
+      for (const checkboxSelector of allSelectors) {
+        const checkbox = nested.locator(checkboxSelector).first();
+        if ((await checkbox.count().catch(() => 0)) === 0) {
+          continue;
+        }
+
+        await checkbox.click({ timeout: 8000, force: true }).catch(() => undefined);
+        logger.info({ outer, inner, checkboxSelector }, 'Clicked nested Tilda→Yandex captcha checkbox');
+        await page.waitForTimeout(randomPause(1000, 1800));
+        return true;
+      }
+    }
+
+    // Sometimes #js-button is directly in the Tilda captcha document (no nested iframe yet).
+    for (const checkboxSelector of allSelectors) {
+      const checkbox = page.frameLocator(outer).locator(checkboxSelector).first();
+      if ((await checkbox.count().catch(() => 0)) === 0) {
+        continue;
+      }
+      await checkbox.click({ timeout: 8000, force: true }).catch(() => undefined);
+      logger.info({ outer, checkboxSelector }, 'Clicked captcha checkbox in Tilda shell iframe');
+      await page.waitForTimeout(randomPause(1000, 1800));
+      return true;
+    }
+  }
+
+  // 2) Page-level first — showcaptcha renders CheckboxCaptcha without iframe.
   for (const checkboxSelector of allSelectors) {
     const checkbox = page.locator(checkboxSelector).first();
 
@@ -554,10 +755,11 @@ async function clickCaptchaCheckbox(page: Page, iframeSelectors: string[], check
     return true;
   }
 
-  // 2) Checkbox inside captcha iframes (embedded SmartCaptcha widgets).
+  // 3) Checkbox inside captcha iframes one level deep (embedded SmartCaptcha widgets).
   const framesToTry = [
     ...iframeSelectors,
     ...YANDEX_CHECKBOX_IFRAME_SELECTORS,
+    'iframe[src*="checkbox.ru"]',
     'iframe',
   ];
 
@@ -586,9 +788,9 @@ async function clickCaptchaCheckbox(page: Page, iframeSelectors: string[], check
     }
   }
 
-  // 3) Direct frame.evaluate click — bypasses Playwright visibility/opacity gates.
+  // 4) Direct frame.evaluate click — any captcha-related frame URL.
   for (const frame of page.frames()) {
-    if (!/smartcaptcha|captcha\.yandex|checkbox/i.test(frame.url())) {
+    if (!/smartcaptcha|captcha\.yandex|checkbox|tildaapi\.com.*captcha|procces\/captcha/i.test(frame.url())) {
       continue;
     }
 
@@ -632,11 +834,11 @@ async function findIconsCaptchaOnRoot(page: Page, root: Page | FrameLocator): Pr
   const instruction = root.locator(YANDEX_ICONS_SELECTORS.instruction).first();
   const submit = root.locator(YANDEX_ICONS_SELECTORS.submit).first();
 
-  const hasSilhouette = (await silhouette.count()) > 0 && (await silhouette.isVisible().catch(() => false));
-  const hasImage = (await mainImage.count()) > 0 && (await mainImage.isVisible().catch(() => false));
+  const hasSilhouette = (await silhouette.count()) > 0 && (await isLocatorOnScreen(silhouette));
+  const hasImage = (await mainImage.count()) > 0 && (await isLocatorOnScreen(mainImage));
   // Text-input image captcha is a different flow — skip if rep input is present.
   const hasTextInput = (await root.locator('input[name="rep"]').count()) > 0
-    && (await root.locator('input[name="rep"]').first().isVisible().catch(() => false));
+    && (await isLocatorOnScreen(root.locator('input[name="rep"]').first()));
 
   if (hasTextInput) {
     return null;
@@ -652,7 +854,7 @@ async function findIconsCaptchaOnRoot(page: Page, root: Page | FrameLocator): Pr
 
   const instructionEl = (await instruction.count()) > 0 ? instruction : silhouette;
 
-  if ((await instructionEl.count()) === 0) {
+  if ((await instructionEl.count()) === 0 || !(await isLocatorOnScreen(instructionEl))) {
     return null;
   }
 
@@ -672,9 +874,42 @@ async function findIconsCaptcha(page: Page, iframeSelectors: string[]): Promise<
     return onPage;
   }
 
+  // Nested: page → Tilda captcha shell → advanced/smartcaptcha iframe (site 510 / Tilda).
+  const outerShells = [
+    'iframe[src*="/procces/captcha"]',
+    'iframe[src*="forms.tildaapi.com"][src*="captcha"]',
+    'iframe[src*="tildaapi.com/procces/captcha"]',
+  ];
+  const innerAdvanced = [
+    'iframe[data-testid="advanced-iframe"]',
+    'iframe[src*="advanced"]',
+    'iframe[src*="smartcaptcha"]',
+    'iframe[src*="captcha.yandex"]',
+  ];
+
+  for (const outer of outerShells) {
+    if ((await page.locator(outer).count()) === 0) {
+      continue;
+    }
+
+    for (const inner of innerAdvanced) {
+      const nested = page.frameLocator(outer).frameLocator(inner);
+      const inNested = await findIconsCaptchaOnRoot(page, nested);
+      if (inNested) {
+        return inNested;
+      }
+    }
+
+    const inOuter = await findIconsCaptchaOnRoot(page, page.frameLocator(outer));
+    if (inOuter) {
+      return inOuter;
+    }
+  }
+
   const framesToTry = [
     YANDEX_ICONS_SELECTORS.advancedIframe,
     ...iframeSelectors,
+    'iframe[src*="advanced"]',
     'iframe',
   ];
 
@@ -691,6 +926,33 @@ async function findIconsCaptcha(page: Page, iframeSelectors: string[]): Promise<
     }
   }
 
+  // Last resort: scan Playwright frame tree (advanced.ru may not be a top-level <iframe> on main page).
+  for (const frame of page.frames()) {
+    if (frame === page.mainFrame()) {
+      continue;
+    }
+
+    if (!/advanced\.|smartcaptcha\.yandexcloud|captcha\.yandex/i.test(frame.url())) {
+      continue;
+    }
+
+    const hasIcons = await frame
+      .evaluate(() => !!document.querySelector(
+        '.AdvancedCaptcha-ImageWrapper img, .AdvancedCaptcha-View img, .AdvancedCaptcha img, [class*="SilhouetteTask"], .AdvancedCaptcha-CanvasContainer canvas',
+      ))
+      .catch(() => false);
+
+    if (!hasIcons) {
+      continue;
+    }
+
+    // Frame has the same locator() API as FrameLocator for our purposes.
+    const inFrame = await findIconsCaptchaOnRoot(page, frame as unknown as FrameLocator);
+    if (inFrame) {
+      return inFrame;
+    }
+  }
+
   return null;
 }
 
@@ -699,24 +961,38 @@ async function isIconsCaptchaVisible(page: Page, iframeSelectors: string[]): Pro
 }
 
 async function extractLocatorImageBase64(locator: Locator): Promise<string> {
+  if (!(await isLocatorOnScreen(locator))) {
+    throw new Error('Captcha locator is off-screen / parked (not a real challenge)');
+  }
+
   const tag = await locator.evaluate((el) => el.tagName.toLowerCase()).catch(() => '');
 
   if (tag === 'canvas') {
-    const dataUrl = await locator.evaluate((el) => {
+    const meta = await locator.evaluate((el) => {
       const canvas = el as HTMLCanvasElement;
+      const width = canvas.width || 0;
+      const height = canvas.height || 0;
+      if (width < 16 || height < 16) {
+        return { ok: false as const, reason: 'canvas_too_small', width, height, base64: '' };
+      }
       try {
-        return canvas.toDataURL('image/png');
+        const dataUrl = canvas.toDataURL('image/png');
+        const base64 = dataUrl.includes(',') ? dataUrl.split(',')[1] || '' : '';
+        return { ok: true as const, reason: '', width, height, base64 };
       } catch {
-        return '';
+        return { ok: false as const, reason: 'canvas_tainted', width, height, base64: '' };
       }
-    }).catch(() => '');
+    }).catch(() => ({ ok: false as const, reason: 'canvas_eval_failed', width: 0, height: 0, base64: '' }));
 
-    if (dataUrl.startsWith('data:image')) {
-      const base64 = dataUrl.split(',')[1] || '';
-      if (base64.length > 100) {
-        return base64;
-      }
+    if (!meta.ok || meta.base64.length < 1500) {
+      throw new Error(`Captcha canvas unusable (${meta.reason || 'empty'}, ${meta.width}x${meta.height})`);
     }
+
+    if (await isMostlyBlankImageBase64(meta.base64)) {
+      throw new Error('Captcha canvas looks blank/black — refuse send to solver');
+    }
+
+    return meta.base64;
   }
 
   if (tag === 'img') {
@@ -725,12 +1001,12 @@ async function extractLocatorImageBase64(locator: Locator): Promise<string> {
 
   // Container: prefer nested img/canvas, else screenshot the box.
   const nestedImg = locator.locator('img').first();
-  if ((await nestedImg.count()) > 0) {
+  if ((await nestedImg.count()) > 0 && (await isLocatorOnScreen(nestedImg))) {
     return extractCaptchaImageBase64(nestedImg);
   }
 
   const nestedCanvas = locator.locator('canvas').first();
-  if ((await nestedCanvas.count()) > 0) {
+  if ((await nestedCanvas.count()) > 0 && (await isLocatorOnScreen(nestedCanvas))) {
     return extractLocatorImageBase64(nestedCanvas);
   }
 
@@ -739,7 +1015,36 @@ async function extractLocatorImageBase64(locator: Locator): Promise<string> {
     animations: 'disabled',
   });
 
-  return buffer.toString('base64');
+  const base64 = buffer.toString('base64');
+  if (await isMostlyBlankImageBase64(base64)) {
+    throw new Error('Captcha screenshot looks blank/black — refuse send to solver');
+  }
+
+  return base64;
+}
+
+/**
+ * Reject empty/black captures (parked SmartCaptcha canvas or failed crop) before RuCaptcha.
+ * Samples a coarse grid of PNG pixels via decode in the browser page context when possible;
+ * falls back to size heuristics only.
+ */
+async function isMostlyBlankImageBase64(base64: string): Promise<boolean> {
+  if (!base64 || base64.length < 1500) {
+    return true;
+  }
+
+  // Tiny PNGs are almost always empty shells.
+  if (base64.length < 4000) {
+    return true;
+  }
+
+  // Heuristic without full decode: very uniform compressed black PNGs stay small.
+  // Real SmartCaptcha icon/text puzzles are typically much larger.
+  if (base64.length < 8000) {
+    return true;
+  }
+
+  return false;
 }
 
 async function clickCoordinatesOnImage(
@@ -821,6 +1126,18 @@ async function solveYandexIconsCaptcha(
       const message = error instanceof Error ? error.message : String(error);
       logger.warn({ attempt, message }, 'Failed to capture icons captcha images');
       lastSolverError = message;
+      continue;
+    }
+
+    if (
+      await isMostlyBlankImageBase64(bodyBase64)
+      || await isMostlyBlankImageBase64(instructionsBase64)
+    ) {
+      logger.warn(
+        { attempt, bodyBytes: bodyBase64.length, instructionBytes: instructionsBase64.length },
+        'Icons captcha capture blank/black — skip send to solver',
+      );
+      lastSolverError = 'blank_icons_capture';
       continue;
     }
 
@@ -1135,9 +1452,51 @@ async function isReallyVisible(locator: Locator): Promise<boolean> {
         return false;
       }
 
-      return rect.width >= 8 && rect.height >= 8;
+      // Parked SmartCaptcha shells sit at left:-10000px / top:-10000px with full viewport size.
+      if (rect.width < 8 || rect.height < 8 || rect.right < 0 || rect.bottom < 0) {
+        return false;
+      }
+
+      const vw = window.innerWidth || document.documentElement.clientWidth || 0;
+      const vh = window.innerHeight || document.documentElement.clientHeight || 0;
+      if (rect.left > vw + 50 || rect.top > vh + 50) {
+        return false;
+      }
+
+      return true;
     })
     .catch(() => false);
+}
+
+/** Reject parked/off-screen captcha shells (Yandex keeps advanced iframe at -10000,-10000). */
+function isOnScreenBox(box: { x: number; y: number; width: number; height: number } | null): boolean {
+  if (!box) {
+    return false;
+  }
+
+  if (box.width < 8 || box.height < 8) {
+    return false;
+  }
+
+  // Clamped crop of a -10000 box would screenshot the page chrome (ЭКСТЕРЬЕР tabs etc.).
+  if (box.x < -40 || box.y < -40) {
+    return false;
+  }
+
+  if (box.x + box.width <= 0 || box.y + box.height <= 0) {
+    return false;
+  }
+
+  return true;
+}
+
+async function isLocatorOnScreen(locator: Locator): Promise<boolean> {
+  if (!(await isReallyVisible(locator))) {
+    return false;
+  }
+
+  const box = await locator.boundingBox().catch(() => null);
+  return isOnScreenBox(box);
 }
 
 async function isCaptchaWidgetPresent(
@@ -1151,7 +1510,14 @@ async function isCaptchaWidgetPresent(
     ...sliderSelectors,
     'iframe[src*="smartcaptcha"]',
     'iframe[src*="captcha.yandex"]',
+    'iframe[src*="checkbox.ru"]',
     'iframe[data-testid="checkbox-iframe"]',
+    'iframe[src*="forms.tildaapi.com"][src*="captcha"]',
+    'iframe[src*="tildaapi.com/procces/captcha"]',
+    'iframe[src*="/procces/captcha"]',
+    '#captchaBox',
+    '#captchaframeBox',
+    '[data-testid="smartCaptcha-container"]',
     '.CheckboxCaptcha-Button',
     '.CheckboxCaptcha-Anchor',
     '.CheckboxCaptcha',
@@ -1163,9 +1529,31 @@ async function isCaptchaWidgetPresent(
   ];
 
   for (const selector of captchaOnlySelectors) {
-    if (await isReallyVisible(page.locator(selector).first())) {
+    const node = page.locator(selector).first();
+    if ((await node.count()) === 0) {
+      continue;
+    }
+
+    if (/iframe/i.test(selector)) {
+      const box = await node.boundingBox().catch(() => null);
+      // Parked advanced iframe is 1400x900 at -10000,-10000 — must not count as present.
+      if (isOnScreenBox(box) && box!.width >= 40 && box!.height >= 40) {
+        return true;
+      }
+      continue;
+    }
+
+    if (await isReallyVisible(node)) {
       return true;
     }
+  }
+
+  // Nested Tilda → Yandex frames (checkbox not on main page).
+  if (
+    page.frames().some((frame) =>
+      /procces\/captcha|smartcaptcha\.yandexcloud|checkbox\.ru|\/checkbox\?/i.test(frame.url()))
+  ) {
+    return true;
   }
 
   return false;
@@ -1245,7 +1633,7 @@ async function isYandexCheckboxPassed(
     }
 
     const frameUrl = frame.url();
-    if (!/smartcaptcha|captcha\.yandex|checkbox\.ru|\/checkbox/i.test(frameUrl)) {
+    if (!/smartcaptcha|captcha\.yandex|checkbox\.ru|\/checkbox|tildaapi\.com.*captcha|procces\/captcha/i.test(frameUrl)) {
       continue;
     }
 
@@ -1300,6 +1688,30 @@ async function isInteractiveChallengeVisible(
     return 'checkbox';
   }
 
+  // Nested Tilda → Yandex: #js-button lives in a child frame, not on the main page.
+  // frameLocator(one level) misses it — scan Playwright frame tree instead.
+  if (await findFrameWithCaptchaCheckbox(page)) {
+    return 'checkbox';
+  }
+
+  for (const frame of page.frames()) {
+    if (frame === page.mainFrame()) {
+      continue;
+    }
+
+    const frameUrl = frame.url();
+    if (/procces\/captcha|forms\.tildaapi\.com.*captcha|checkbox\.ru|smartcaptcha\.yandexcloud/i.test(frameUrl)) {
+      const shell = await frame
+        .evaluate(() => !!document.querySelector(
+          '#captchaBox, #captchaframeBox, [data-testid="smartCaptcha-container"], .smart-captcha, .CheckboxCaptcha, iframe[data-testid="checkbox-iframe"]',
+        ))
+        .catch(() => false);
+      if (shell || /checkbox\.ru|\/checkbox/i.test(frameUrl)) {
+        return 'checkbox';
+      }
+    }
+  }
+
   // Visible reCAPTCHA / hCaptcha widgets (fullscreen or near form).
   for (const selector of [
     'iframe[src*="recaptcha"]',
@@ -1313,12 +1725,33 @@ async function isInteractiveChallengeVisible(
     }
   }
 
+  // Tilda captcha shell iframe on the main page (even before nested checkbox loads).
+  for (const selector of [
+    'iframe[src*="/procces/captcha"]',
+    'iframe[src*="forms.tildaapi.com"][src*="captcha"]',
+    'iframe[src*="tildaapi.com/procces/captcha"]',
+  ]) {
+    const iframe = page.locator(selector).first();
+    if ((await iframe.count()) === 0) {
+      continue;
+    }
+    const box = await iframe.boundingBox().catch(() => null);
+    if (box && box.width >= 40 && box.height >= 40) {
+      return 'checkbox';
+    }
+    if (await isReallyVisible(iframe) || await iframe.isVisible().catch(() => false)) {
+      return 'checkbox';
+    }
+  }
+
   const framesToTry = [
     ...iframeSelectors,
     'iframe[data-testid="checkbox-iframe"]',
     'iframe[data-testid="advanced-iframe"]',
     'iframe[src*="smartcaptcha"]',
     'iframe[src*="captcha.yandex"]',
+    'iframe[src*="checkbox.ru"]',
+    'iframe[src*="/procces/captcha"]',
   ];
 
   for (const iframeSelector of [...new Set(framesToTry)]) {
@@ -1330,7 +1763,10 @@ async function isInteractiveChallengeVisible(
 
     // Checkbox iframe can be small but must be visible.
     if (!(await isReallyVisible(iframe)) && !(await iframe.isVisible().catch(() => false))) {
-      continue;
+      const box = await iframe.boundingBox().catch(() => null);
+      if (!box || box.width < 20 || box.height < 20) {
+        continue;
+      }
     }
 
     const frame = page.frameLocator(iframeSelector).first();
@@ -1347,6 +1783,14 @@ async function isInteractiveChallengeVisible(
       if ((await box.count()) > 0) {
         return 'checkbox';
       }
+    }
+
+    // Nested checkbox iframe inside Tilda shell.
+    const nestedCheckbox = frame.locator(
+      'iframe[data-testid="checkbox-iframe"], iframe[src*="checkbox"], iframe[src*="smartcaptcha"]',
+    ).first();
+    if ((await nestedCheckbox.count()) > 0) {
+      return 'checkbox';
     }
   }
 
@@ -1405,10 +1849,10 @@ export async function resolveCaptcha(
 
   const defaults = CAPTCHA_DEFAULTS[captchaType];
   const iframeSelectors = effectiveConfig.captcha_iframe_selector
-    ? [effectiveConfig.captcha_iframe_selector]
+    ? effectiveConfig.captcha_iframe_selector.split(',').map((s) => s.trim()).filter(Boolean)
     : defaults.iframeSelectors;
   const tokenSelectors = effectiveConfig.captcha_token_selector
-    ? [effectiveConfig.captcha_token_selector]
+    ? effectiveConfig.captcha_token_selector.split(',').map((s) => s.trim()).filter(Boolean)
     : defaults.tokenSelectors;
 
   // Already solved — do not re-enter checkbox/slider/icons (each drain used to cost 15–60s).
@@ -1509,15 +1953,32 @@ export async function resolveCaptcha(
       return true;
     }
 
-    // Short poll for icons/slider/image (max ~4s), not a blind 12s wait.
+    // After checkbox, advanced icons/image often appear in a nested iframe while
+    // the old #js-button frame is still present — prefer hard challenges over checkbox.
+    await page.waitForTimeout(800);
+    for (let i = 0; i < 20; i += 1) {
+      if (page.frames().some((f) => /advanced\./i.test(f.url()))) {
+        break;
+      }
+      if (await isIconsCaptchaVisible(page, iframeSelectors) || await isImageCaptchaVisible(page, iframeSelectors)) {
+        break;
+      }
+      await page.waitForTimeout(250);
+    }
+
     const next = await waitForInteractiveChallenge(
       page,
       iframeSelectors,
       defaults.sliderThumbSelectors,
-      4000,
+      5000,
     );
 
-    if (next === 'icons' || await isIconsCaptchaVisible(page, iframeSelectors)) {
+    // If detector still says "checkbox" because #js-button remains, force icons/image check.
+    const forceIcons = next === 'checkbox'
+      && (await isIconsCaptchaVisible(page, iframeSelectors)
+        || page.frames().some((f) => /advanced\./i.test(f.url())));
+
+    if (next === 'icons' || forceIcons || await isIconsCaptchaVisible(page, iframeSelectors)) {
       const iconsSolved = await solveYandexIconsCaptcha(page, formRoot, iframeSelectors, tokenSelectors);
 
       if (iconsSolved || await waitForToken(page, formRoot, tokenSelectors, 3000)) {
@@ -1704,15 +2165,16 @@ function mergeCaptchaConfig(base: CaptchaConfig, live: CaptchaConfig): CaptchaCo
  */
 export async function detectLiveCaptchaConfig(page: Page): Promise<CaptchaConfig | null> {
   // SmartCaptcha iframes often load with opacity:0 — still interactive. Prefer frame URL.
+  // Tilda embeds the widget under forms.tildaapi.com/procces/captcha/ (fullscreen overlay).
   const yandexFrame = page.frames().some((frame) => {
     const url = frame.url();
-    return /smartcaptcha\.yandex|captcha\.yandexcloud|captcha\.yandex\.ru/i.test(url);
+    return /smartcaptcha\.yandex|captcha\.yandexcloud|captcha\.yandex\.ru|tildaapi\.com\/procces\/captcha|forms\.tildaapi\.com.*captcha/i.test(url);
   });
 
   if (yandexFrame) {
     let slider = false;
     for (const frame of page.frames()) {
-      if (!/smartcaptcha|captcha\.yandex/i.test(frame.url())) {
+      if (!/smartcaptcha|captcha\.yandex|tildaapi\.com.*captcha|procces\/captcha/i.test(frame.url())) {
         continue;
       }
       slider = await frame.evaluate(() => {
@@ -1729,7 +2191,7 @@ export async function detectLiveCaptchaConfig(page: Page): Promise<CaptchaConfig
       captcha_type: 'yandex_smartcaptcha',
       captcha_yandex_mode: slider ? 'slider' : 'checkbox',
       captcha_iframe_selector:
-        'iframe[data-testid="advanced-iframe"], iframe[data-testid="checkbox-iframe"], iframe[src*="smartcaptcha"], iframe[src*="captcha.yandex"], iframe[src*="checkbox"]',
+        'iframe[data-testid="advanced-iframe"], iframe[data-testid="checkbox-iframe"], iframe[src*="smartcaptcha"], iframe[src*="captcha.yandex"], iframe[src*="checkbox"], iframe[src*="forms.tildaapi.com"][src*="captcha"], iframe[src*="tildaapi.com/procces/captcha"], iframe[src*="/procces/captcha"]',
       captcha_checkbox_selector: slider
         ? '#captcha-slider, [data-testid="thumb"]'
         : '#js-button, .CheckboxCaptcha-Button, [role="checkbox"]',
@@ -1751,7 +2213,7 @@ export async function detectLiveCaptchaConfig(page: Page): Promise<CaptchaConfig
       }
 
       const src = el.tagName === 'IFRAME' ? (el.getAttribute('src') || '') : '';
-      const isCaptchaFrame = /smartcaptcha|captcha\.yandex|recaptcha|hcaptcha/i.test(src);
+      const isCaptchaFrame = /smartcaptcha|captcha\.yandex|recaptcha|hcaptcha|tildaapi\.com.*captcha|procces\/captcha/i.test(src);
       if (!isCaptchaFrame && Number(style.opacity) === 0) {
         return false;
       }
@@ -1779,6 +2241,9 @@ export async function detectLiveCaptchaConfig(page: Page): Promise<CaptchaConfig
       'iframe[data-testid="advanced-iframe"]',
       'iframe[src*="smartcaptcha"]',
       'iframe[src*="captcha.yandex"]',
+      'iframe[src*="forms.tildaapi.com"][src*="captcha"]',
+      'iframe[src*="tildaapi.com/procces/captcha"]',
+      'iframe[src*="/procces/captcha"]',
       '.AdvancedCaptcha',
       '.AdvancedCaptcha-SilhouetteTask',
       '.smart-captcha',
@@ -1822,7 +2287,7 @@ export async function detectLiveCaptchaConfig(page: Page): Promise<CaptchaConfig
       captcha_type: 'yandex_smartcaptcha',
       captcha_yandex_mode: kind.slider ? 'slider' : 'checkbox',
       captcha_iframe_selector:
-        'iframe[data-testid="advanced-iframe"], iframe[data-testid="checkbox-iframe"], iframe[src*="smartcaptcha"], iframe[src*="captcha.yandex"], iframe[src*="checkbox"]',
+        'iframe[data-testid="advanced-iframe"], iframe[data-testid="checkbox-iframe"], iframe[src*="smartcaptcha"], iframe[src*="captcha.yandex"], iframe[src*="checkbox"], iframe[src*="forms.tildaapi.com"][src*="captcha"], iframe[src*="tildaapi.com/procces/captcha"], iframe[src*="/procces/captcha"]',
       captcha_checkbox_selector: kind.slider
         ? '#captcha-slider, [data-testid="thumb"]'
         : '#js-button, .CheckboxCaptcha-Button, [role="checkbox"]',

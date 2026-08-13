@@ -2,11 +2,12 @@
 
 namespace App\Models;
 
+use App\Support\ParentDomain;
 use Illuminate\Database\Eloquent\Casts\Attribute;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
-use Illuminate\Database\Eloquent\Model;
 
 class Site extends Model
 {
@@ -16,6 +17,7 @@ class Site extends Model
         'name',
         'region_id',
         'url',
+        'parent_domain',
         'ad_url',
         'address',
         'phone',
@@ -45,6 +47,15 @@ class Site extends Model
             'submit_fail_streak' => 'integer',
             'submit_heal_meta' => 'array',
         ];
+    }
+
+    protected static function booted(): void
+    {
+        static::saving(function (Site $site): void {
+            if ($site->isDirty('url') || blank($site->parent_domain)) {
+                $site->parent_domain = ParentDomain::fromUrl($site->url);
+            }
+        });
     }
 
     public function formMappings(): HasMany

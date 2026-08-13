@@ -11,6 +11,10 @@
 export type RawDetectedForm = {
   formScopeSelector: string | null;
   nameSelector: string | null;
+  firstNameSelector: string | null;
+  lastNameSelector: string | null;
+  emailSelector: string | null;
+  selectSelectors: string[];
   phoneSelector: string;
   submitSelector: string;
   consentCheckboxSelectors: string[];
@@ -41,9 +45,17 @@ export function collectFormsInDocument(): FormDetectionResult {
   // Site builders (e.g. mary{hash}phone / mary{hash}name) — id ends with field role.
   const PHONE_ID_SUFFIX_RE = /(phone|tel|telephone|mobile|telefon)$/i;
   const NAME_ID_SUFFIX_RE = /(name|fio|firstname|first_name)$/i;
+  const FIRST_NAME_RE =
+    /(?:^|[_-\s])(first.?name|firstname|given.?name|имя)(?:$|[_-\s*])|^имя\*?$|ваше\s+имя|введите\s+имя/i;
+  const LAST_NAME_RE =
+    /(?:^|[_-\s])(last.?name|lastname|family.?name|surname|фамил)(?:$|[_-\s*])|^фамил\w*\*?$|ваша\s+фамил/i;
+  const FIO_NAME_RE =
+    /ф\.?\s*и\.?\s*о\.?|\bfio\b|полное\s+имя|your\s+name/i;
   const NAME_PLACEHOLDER_RE =
     /ваше\s+имя|введите\s+имя|^имя\*?$|(?:^|[\s:])имя(?:\s|\*|$)|\bимя\b|ф\.?\s*и\.?\s*о\.?|фио|fio|first\s*name|your\s+name|фамил|отчество/i;
   const EMAIL_FIELD_RE = /e-?mail|почта|электронн\w*\s+почт/i;
+  const FILLABLE_SELECT_RE =
+    /дилер|dealer|модель|model|авто|машин|салон|офис|город|city|когда|перезвон|время|call.?time|марка|brand/i;
   const AUTH_FORM_RE =
     /(?:^|[\s>])(войти|вход|логин|password|пароль|sign\s*in|log\s*in|авторизац|регистрац)/i;
   const PHONE_CLASS_RE = /\b(phone|tel|telefon|телефон|phone-input|input-phone)\b/i;
@@ -125,30 +137,74 @@ export function collectFormsInDocument(): FormDetectionResult {
     return rect.width > 0 && rect.height > 0;
   }
 
+  function semanticClassHint(input: HTMLElement): string {
+    let node: HTMLElement | null = input;
+    for (let depth = 0; depth < 5 && node; depth += 1) {
+      const cls = typeof node.className === 'string' ? node.className : '';
+      if (/(?:^|\s)(?:firstname_|lastname_|surname_|phone_|email_|fio_|name_)/i.test(cls)
+        || /(?:firstname|lastname|surname|phone|email|fio)(?:_|\b)/i.test(cls)) {
+        return cls;
+      }
+      node = node.parentElement;
+    }
+    return '';
+  }
+
   function nearbyFieldLabel(input: HTMLElement): string {
     // Prefer the nearest field wrapper — avoid climbing to a parent that wraps name+phone together
     // (e.g. broad [class*="field"] matching the whole form).
     const wrap = input.closest(
-      '.form__field, .form-field, .form-group, .UITextField, .t-input-group, .input-group, [class*="form__field"], [class*="FormField"]',
-    ) ?? input.parentElement;
-    if (!wrap || wrap === input.closest('form') || wrap === document.body) {
-      // Fall back to immediate parent only (not a high-level container).
-      const parent = input.parentElement;
-      if (!parent || parent === input.closest('form')) {
-        return '';
+      '.form__field, .form-field, .form-group, .UITextField, .t-input-group, .input-group, [class*="form__field"], [class*="FormField"], [class*="field__"], [class*="Field__"], [class*="container__"]',
+    ) ?? null;
+
+    if (wrap && wrap !== input.closest('form') && wrap !== document.body) {
+      const labeled = readLocalLabel(wrap, input);
+      if (labeled && labeled.length <= 48) {
+        return labeled;
       }
-      return readLocalLabel(parent, input);
     }
 
-    return readLocalLabel(wrap, input);
+    // CSS-module dealer forms: label often sits on the immediate field container.
+    let node: HTMLElement | null = input.parentElement;
+    for (let depth = 0; depth < 3 && node; depth += 1) {
+      if (node === input.closest('form') || node === document.body) {
+        break;
+      }
+
+      const labeled = readLocalLabel(node, input);
+      if (labeled && labeled.length <= 40) {
+        return labeled;
+      }
+
+      const prev = node.previousElementSibling;
+      if (prev && !(prev instanceof HTMLInputElement) && !(prev instanceof HTMLTextAreaElement) && !(prev instanceof HTMLSelectElement)) {
+        const prevText = (prev.textContent || '').replace(/\s+/g, ' ').trim();
+        if (prevText && prevText.length <= 40 && !/соглас|политик|персональн|smartcaptcha|имяфамил/i.test(prevText)) {
+          return prevText.slice(0, 120);
+        }
+      }
+
+      // Stop once we leave a dedicated field container — don't bleed sibling labels.
+      if (/field__|Field__|container__|form__field|form-group/i.test(String(node.className || ''))) {
+        break;
+      }
+
+      node = node.parentElement;
+    }
+
+    return '';
   }
 
   function readLocalLabel(wrap: Element, input: HTMLElement): string {
     const labelEl = wrap.querySelector(
-      'label, .label, .form__label, .placeholder, .placeholder-content, [class*="label"], [class*="placeholder"]',
+      'label, .label, .form__label, .placeholder, .placeholder-content, [class*="label"], [class*="placeholder"], [class*="Label"]',
     );
-    if (labelEl && !labelEl.contains(input)) {
-      return (labelEl.textContent || '').trim().slice(0, 120);
+    if (labelEl) {
+      const text = (labelEl.textContent || '').replace(/\s+/g, ' ').trim();
+      // Even when <label> wraps the input, empty controls leave only the caption text.
+      if (text && text.length <= 60) {
+        return text.slice(0, 120);
+      }
     }
 
     // Fake placeholders rendered as sibling overlays (common on dealer SPAs).
@@ -158,7 +214,7 @@ export function collectFormsInDocument(): FormDetectionResult {
       }
 
       const text = (sibling.textContent || '').trim();
-      if (text) {
+      if (text && text.length <= 60) {
         return text.slice(0, 120);
       }
     }
@@ -178,7 +234,8 @@ export function collectFormsInDocument(): FormDetectionResult {
     return [
       label,
       parentLabel,
-      nearbyFieldLabel(input),
+      nearbyFieldLabel(input as HTMLElement),
+      semanticClassHint(input as HTMLElement),
       input.getAttribute('aria-label') ?? '',
       input.getAttribute('placeholder') ?? '',
       input.getAttribute('title') ?? '',
@@ -195,15 +252,36 @@ export function collectFormsInDocument(): FormDetectionResult {
       .trim();
   }
 
+  function buildSelectSelector(select: HTMLSelectElement): string | null {
+    if (select.id && isStableElementId(select.id)) {
+      return `#${cssEscape(select.id)}`;
+    }
+
+    const name = select.getAttribute('name');
+    if (name) {
+      return `select[name="${cssEscapeAttribute(name)}"]`;
+    }
+
+    const className = typeof select.className === 'string'
+      ? select.className.trim().split(/\s+/).find((token) => token.length > 2 && token.length < 40)
+      : null;
+    if (className) {
+      return `select.${cssEscape(className)}`;
+    }
+
+    return 'select';
+  }
+
   function buildInputSelector(input: HTMLInputElement): string | null {
     // Prefer stable semantic ids (#phone) before generic name=tel shared across forms.
     if (
       input.id
       && isStableElementId(input.id)
       && (
-        /^(phone|tel|telephone|mobile|name|fio)$/i.test(input.id)
+        /^(phone|tel|telephone|mobile|name|fio|email|firstname|lastname|first_name|last_name)$/i.test(input.id)
         || PHONE_ID_SUFFIX_RE.test(input.id)
         || NAME_ID_SUFFIX_RE.test(input.id)
+        || /email|mail$/i.test(input.id)
       )
     ) {
       return `#${cssEscape(input.id)}`;
@@ -236,7 +314,7 @@ export function collectFormsInDocument(): FormDetectionResult {
         return `input[placeholder*="${cssEscapeAttribute(shortPh)}"]`;
       }
 
-      if (NAME_PLACEHOLDER_RE.test(placeholder)) {
+      if (NAME_PLACEHOLDER_RE.test(placeholder) || EMAIL_FIELD_RE.test(placeholder)) {
         return `input[placeholder*="${cssEscapeAttribute(shortPh)}"]`;
       }
     }
@@ -245,15 +323,31 @@ export function collectFormsInDocument(): FormDetectionResult {
       return 'input[type="tel"]';
     }
 
-    const nearby = nearbyFieldLabel(input);
+    if (type === 'email') {
+      return 'input[type="email"]';
+    }
 
-    // Dealer SPAs often use overlay placeholders instead of placeholder=.
+    const nearby = nearbyFieldLabel(input);
+    const formRoot = input.closest('form') ?? input.closest('[class*="form"]') ?? document.body;
+
+    // Name/phone/email without stable attrs — bind by relative path inside the form.
+    if ((type === 'text' || type === '' || type === 'search' || type === 'tel' || type === 'email')
+      && (NAME_PLACEHOLDER_RE.test(nearby) || PHONE_PLACEHOLDER_RE.test(nearby) || EMAIL_FIELD_RE.test(nearby)
+        || semanticClassHint(input) || type === 'tel' || type === 'email')) {
+      const relative = buildRelativeCssPath(input, formRoot);
+      if (relative) {
+        return relative;
+      }
+    }
+
     if ((type === 'text' || type === '') && NAME_PLACEHOLDER_RE.test(nearby)) {
-      return 'input[type="text"]';
+      const relative = buildRelativeCssPath(input, formRoot);
+      return relative ?? 'input[type="text"]';
     }
 
     if ((type === 'text' || type === '') && PHONE_PLACEHOLDER_RE.test(nearby)) {
-      return 'input[type="text"]';
+      const relative = buildRelativeCssPath(input, formRoot);
+      return relative ?? 'input[type="text"]';
     }
 
     const inputMode = (input.getAttribute('inputmode') || '').toLowerCase();
@@ -261,11 +355,12 @@ export function collectFormsInDocument(): FormDetectionResult {
     if (inputMode === 'tel' || inputMode === 'numeric' || inputMode === 'decimal') {
       // Many RU dealer sites mark phone as inputmode=numeric without name=.
       if (PHONE_PLACEHOLDER_RE.test(placeholder) || PHONE_PLACEHOLDER_RE.test(inputContext(input))) {
-        return `input[inputmode="${cssEscapeAttribute(inputMode)}"]`;
+        const relative = buildRelativeCssPath(input, formRoot);
+        return relative ?? `input[inputmode="${cssEscapeAttribute(inputMode)}"]`;
       }
     }
 
-    return null;
+    return buildRelativeCssPath(input, formRoot);
   }
 
   function buildScopeSelector(root: Element, phoneInput: HTMLInputElement): string {
@@ -454,6 +549,14 @@ export function collectFormsInDocument(): FormDetectionResult {
     return phoneSel ? `:has(${phoneSel})` : 'body';
   }
 
+  function isInsideCustomSelectWidget(el: Element): boolean {
+    return Boolean(
+      el.closest(
+        '[class*="react-select__"], [class*="Select__control"], [class*="Select__value"], [class*="Select__input"], [class*="select__control"], [class*="select__value"]',
+      ),
+    );
+  }
+
   function isAllowedLeadField(input: HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement): boolean {
     if (input instanceof HTMLInputElement) {
       const type = (input.getAttribute('type') || 'text').toLowerCase();
@@ -467,7 +570,12 @@ export function collectFormsInDocument(): FormDetectionResult {
         return true;
       }
 
-      if (isPhoneField(input) || isNameField(input)) {
+      // react-select / react-select-like search input inside the control — not a real form field.
+      if (isInsideCustomSelectWidget(input)) {
+        return true;
+      }
+
+      if (isPhoneField(input) || isNameField(input) || isFirstNameField(input) || isLastNameField(input) || isEmailField(input)) {
         return true;
       }
 
@@ -503,7 +611,7 @@ export function collectFormsInDocument(): FormDetectionResult {
       return /комментар|сообщен|message|note/i.test(context);
     }
 
-    // select: only "when to call" style is allowed; car/city/etc. are not.
+    // select: call-time + dealer/model/city style — we fill randomly.
     if (input instanceof HTMLSelectElement) {
       if (!isVisible(input)) {
         return true;
@@ -513,10 +621,12 @@ export function collectFormsInDocument(): FormDetectionResult {
         input.getAttribute('name') || '',
         input.getAttribute('id') || '',
         inputContext(input as unknown as HTMLInputElement),
-        [...input.options].slice(0, 5).map((opt) => opt.textContent || '').join(' '),
+        [...input.options].slice(0, 8).map((opt) => opt.textContent || '').join(' '),
       ].join(' ');
 
-      return /перезвон|когда\s+звон|время\s+звон|удобн\w*\s+врем|call.?time|callback.?time/i.test(context);
+      return /перезвон|когда\s+звон|время\s+звон|удобн\w*\s+врем|call.?time|callback.?time/i.test(context)
+        || FILLABLE_SELECT_RE.test(context)
+        || fieldLooksRequired(input);
     }
 
     return false;
@@ -537,32 +647,10 @@ export function collectFormsInDocument(): FormDetectionResult {
   }
 
   /**
-   * Skip forms that need more than name + phone + consent
-   * (email, car, city, arrival time, product picker, etc.).
+   * Skip forms that need more than name/phone/email/selects + consent
+   * (address, vin, required comment, password, etc.).
    */
   function hasDisqualifyingExtraFields(root: Element): boolean {
-    // Explicit car / product pickers (often without HTML required).
-    // Avoid matching BEM fragments like catalog-model--credit (contains "--c…").
-    const carPicker = root.querySelector(
-      '[class*="car-select"], [class*="select-car"], [class*="pick-car"], [data-car], [data-vehicle], select[name*="car"], select[name*="model"]',
-    );
-
-    if (carPicker && isVisible(carPicker)) {
-      return true;
-    }
-
-    const rootText = (root.textContent || '').replace(/\s+/g, ' ');
-
-    if (/выбрать\s+автомобил|выбор\s+автомобил|укажите\s+автомобил|выберите\s+(авто|машин|модель)/i.test(rootText)) {
-      // Only when that text is part of a field control, not page marketing.
-      const controlWithCar = [...root.querySelectorAll('button, label, select, [role="button"], .form__field, [class*="field"]')]
-        .some((el) => /выбрать\s+автомобил|выбор\s+автомобил|укажите\s+автомобил|выберите\s+(авто|машин|модель)/i.test(el.textContent || ''));
-
-      if (controlWithCar) {
-        return true;
-      }
-    }
-
     for (const node of root.querySelectorAll('input, textarea, select')) {
       if (!(node instanceof HTMLInputElement || node instanceof HTMLTextAreaElement || node instanceof HTMLSelectElement)) {
         continue;
@@ -578,6 +666,10 @@ export function collectFormsInDocument(): FormDetectionResult {
         if (type === 'checkbox' || type === 'radio') {
           continue;
         }
+
+        if (type === 'password') {
+          return true;
+        }
       }
 
       if (!isVisible(node) && !(node instanceof HTMLSelectElement && node.required)) {
@@ -585,28 +677,28 @@ export function collectFormsInDocument(): FormDetectionResult {
       }
 
       if (isAllowedLeadField(node)) {
-        // Allowed fields are fine even when required (name/phone).
         continue;
       }
 
-      // Disallowed field present: skip if required OR looks like a hard business field.
       const context = node instanceof HTMLInputElement
         ? inputContext(node)
         : `${(node as HTMLElement).getAttribute('name') || ''} ${(node as HTMLElement).getAttribute('placeholder') || ''} ${node.textContent || ''}`.replace(/\s+/g, ' ');
 
-      const looksBusinessField =
-        /(?:^|[_-\s])(email|почт|город|city|адрес|address|авто|машин|модель|model|car|марка|brand|vin|пробег|год|year|время|date|дат[аы]|прибыт|визит|офис|салон|комментар|message)(?:$|[_-\s])/i.test(context)
-        || (node instanceof HTMLSelectElement)
-        || (node instanceof HTMLInputElement && (node.getAttribute('type') || '').toLowerCase() === 'email');
+      const looksUnsupported =
+        /(?:^|[_-\s])(адрес|address|vin|пробег|инн|паспорт|комментар|message|отзыв)(?:$|[_-\s])/i.test(context)
+        || (node instanceof HTMLTextAreaElement && fieldLooksRequired(node));
 
-      if (fieldLooksRequired(node) || looksBusinessField) {
+      if (looksUnsupported && fieldLooksRequired(node)) {
         return true;
       }
 
-      // Any other visible non-lead text input beyond name/phone → skip (too complex),
-      // except a single anonymous text field next to phone (name without placeholder/name=).
       if (node instanceof HTMLInputElement || node instanceof HTMLTextAreaElement) {
         if (node instanceof HTMLInputElement) {
+          const type = (node.getAttribute('type') || 'text').toLowerCase();
+          if (type === 'email') {
+            continue;
+          }
+
           const textInputs = [...root.querySelectorAll('input')].filter((el) => {
             if (!(el instanceof HTMLInputElement) || !isVisible(el)) {
               return false;
@@ -615,13 +707,16 @@ export function collectFormsInDocument(): FormDetectionResult {
             return t === 'text' || t === 'search' || t === '';
           });
           const phoneCount = textInputs.filter((el) => isPhoneField(el)).length;
-          const nameCount = textInputs.filter((el) => isNameField(el)).length;
+          const nameCount = textInputs.filter((el) => isNameField(el) || isFirstNameField(el) || isLastNameField(el)).length;
           const unknownCount = textInputs.length - phoneCount - nameCount;
 
           if (phoneCount >= 1 && nameCount === 0 && unknownCount === 1) {
-            // Likely "name" field with empty placeholder / generated id — allow.
             continue;
           }
+        }
+
+        if (fieldLooksRequired(node)) {
+          return true;
         }
 
         return true;
@@ -631,6 +726,180 @@ export function collectFormsInDocument(): FormDetectionResult {
     return false;
   }
 
+  function isFirstNameField(input: HTMLInputElement): boolean {
+    const type = (input.getAttribute('type') || 'text').toLowerCase();
+    if (SKIP_INPUT_TYPES.has(type) || type === 'tel' || type === 'email') {
+      return false;
+    }
+    if (isPhoneField(input) || isEmailField(input)) {
+      return false;
+    }
+
+    const autocomplete = (input.getAttribute('autocomplete') || '').toLowerCase();
+    if (autocomplete === 'given-name') {
+      return true;
+    }
+
+    const context = inputContext(input);
+    const name = (input.getAttribute('name') || '').trim();
+    const id = (input.id || '').trim();
+    const placeholder = (input.getAttribute('placeholder') || '').trim();
+
+    if (LAST_NAME_RE.test(name) || LAST_NAME_RE.test(id) || LAST_NAME_RE.test(placeholder) || LAST_NAME_RE.test(context)) {
+      return false;
+    }
+
+    return FIRST_NAME_RE.test(name) || FIRST_NAME_RE.test(id) || FIRST_NAME_RE.test(placeholder) || FIRST_NAME_RE.test(context);
+  }
+
+  function isLastNameField(input: HTMLInputElement): boolean {
+    const type = (input.getAttribute('type') || 'text').toLowerCase();
+    if (SKIP_INPUT_TYPES.has(type) || type === 'tel' || type === 'email') {
+      return false;
+    }
+    if (isPhoneField(input) || isEmailField(input)) {
+      return false;
+    }
+
+    const autocomplete = (input.getAttribute('autocomplete') || '').toLowerCase();
+    if (autocomplete === 'family-name') {
+      return true;
+    }
+
+    const context = inputContext(input);
+    const name = (input.getAttribute('name') || '').trim();
+    const id = (input.id || '').trim();
+    const placeholder = (input.getAttribute('placeholder') || '').trim();
+
+    return LAST_NAME_RE.test(name) || LAST_NAME_RE.test(id) || LAST_NAME_RE.test(placeholder) || LAST_NAME_RE.test(context);
+  }
+
+  function isCombinedNameField(input: HTMLInputElement): boolean {
+    if (isFirstNameField(input) || isLastNameField(input)) {
+      return false;
+    }
+
+    return isNameField(input) || FIO_NAME_RE.test(inputContext(input));
+  }
+
+  function buildRelativeCssPath(el: Element, root: Element): string | null {
+    if (el === root) {
+      return null;
+    }
+
+    const parts: string[] = [];
+    let node: Element | null = el;
+
+    while (node && node !== root) {
+      const parent: Element | null = node.parentElement;
+      if (!parent) {
+        break;
+      }
+
+      const tag = node.tagName.toLowerCase();
+      const siblings = [...parent.children].filter((child) => child.tagName === node!.tagName);
+      if (siblings.length === 1) {
+        parts.unshift(tag);
+      } else {
+        const index = siblings.indexOf(node) + 1;
+        parts.unshift(`${tag}:nth-of-type(${index})`);
+      }
+
+      node = parent;
+      if (parts.length > 14) {
+        break;
+      }
+    }
+
+    return parts.length > 0 ? parts.join(' > ') : null;
+  }
+
+  function buildCustomSelectControlSelector(control: Element, root: Element): string | null {
+    if (!(control instanceof HTMLElement)) {
+      return null;
+    }
+
+    if (control.id && isStableElementId(control.id)) {
+      return `#${cssEscape(control.id)}`;
+    }
+
+    const relative = buildRelativeCssPath(control, root);
+    if (relative) {
+      return relative;
+    }
+
+    const className = typeof control.className === 'string'
+      ? control.className.trim().split(/\s+/).find((token) => /react-select__control|Select__control|select__control/i.test(token))
+      : null;
+
+    if (className) {
+      return `div.${cssEscape(className)}`;
+    }
+
+    return '[class*="react-select__control"], [class*="Select__control"]';
+  }
+
+  function collectFillableSelectSelectors(root: Element): string[] {
+    const result: string[] = [];
+    for (const node of root.querySelectorAll('select')) {
+      if (!(node instanceof HTMLSelectElement) || !isVisible(node)) {
+        continue;
+      }
+
+      const context = [
+        node.getAttribute('name') || '',
+        node.id || '',
+        inputContext(node as unknown as HTMLInputElement),
+        [...node.options].slice(0, 8).map((opt) => opt.textContent || '').join(' '),
+      ].join(' ');
+
+      if (
+        FILLABLE_SELECT_RE.test(context)
+        || fieldLooksRequired(node)
+        || /перезвон|когда\s+звон|call.?time/i.test(context)
+      ) {
+        const selector = buildSelectSelector(node);
+        if (selector) {
+          result.push(selector);
+        }
+      }
+    }
+
+    const customControls = [
+      ...root.querySelectorAll(
+        '[class*="react-select__control"], [class*="Select__control"], [class*="select__control"]',
+      ),
+    ].filter((node): node is HTMLElement => node instanceof HTMLElement && isVisible(node));
+
+    for (const control of customControls) {
+      // Skip nested duplicates (value-container inside control already matched as control).
+      if (control.closest('[class*="react-select__menu"], [class*="Select__menu"]')) {
+        continue;
+      }
+
+      const context = [
+        control.getAttribute('aria-label') || '',
+        control.textContent || '',
+        nearbyFieldLabel(control),
+        control.className || '',
+      ].join(' ');
+
+      // Lead forms: any visible custom select (dealer/model/city) is fillable on submit.
+      if (
+        FILLABLE_SELECT_RE.test(context)
+        || /выберите|select|дилер|модель|город/i.test(context)
+        || customControls.length <= 4
+      ) {
+        const selector = buildCustomSelectControlSelector(control, root);
+        if (selector) {
+          result.push(selector);
+        }
+      }
+    }
+
+    return [...new Set(result)];
+  }
+
   function isNameField(input: HTMLInputElement): boolean {
     const type = (input.getAttribute('type') || 'text').toLowerCase();
 
@@ -638,7 +907,7 @@ export function collectFormsInDocument(): FormDetectionResult {
       return false;
     }
 
-    if (isPhoneField(input) || isEmailField(input)) {
+    if (isPhoneField(input) || isEmailField(input) || isFirstNameField(input) || isLastNameField(input)) {
       return false;
     }
 
@@ -661,15 +930,19 @@ export function collectFormsInDocument(): FormDetectionResult {
       return true;
     }
 
-    // Tilda / builders: name="Name", name="name[]", autocomplete=name
-    if (/^name(\[\]|$)/i.test(name) || /^(name|given-name|family-name)$/i.test((input.getAttribute('autocomplete') || '').trim())) {
+    // Tilda / builders: name="Name", name="name[]", autocomplete=name (not given/family).
+    if (/^name(\[\]|$)/i.test(name) || /^(name)$/i.test((input.getAttribute('autocomplete') || '').trim())) {
       return true;
     }
 
     const placeholder = (input.getAttribute('placeholder') || '').trim();
     const context = inputContext(input);
 
-    return NAME_PLACEHOLDER_RE.test(placeholder) || NAME_PLACEHOLDER_RE.test(context);
+    if (FIRST_NAME_RE.test(placeholder) || LAST_NAME_RE.test(placeholder) || FIRST_NAME_RE.test(context) || LAST_NAME_RE.test(context)) {
+      return false;
+    }
+
+    return NAME_PLACEHOLDER_RE.test(placeholder) || NAME_PLACEHOLDER_RE.test(context) || FIO_NAME_RE.test(context);
   }
 
   function isPhoneField(input: HTMLInputElement): boolean {
@@ -903,7 +1176,10 @@ export function collectFormsInDocument(): FormDetectionResult {
 
   function findVisibleInputs(root: Element): HTMLInputElement[] {
     return queryAllDeep(root, 'input, textarea').filter(
-      (input): input is HTMLInputElement => input instanceof HTMLInputElement && isVisible(input),
+      (input): input is HTMLInputElement =>
+        input instanceof HTMLInputElement
+        && isVisible(input)
+        && !isInsideCustomSelectWidget(input),
     );
   }
 
@@ -1031,13 +1307,24 @@ export function collectFormsInDocument(): FormDetectionResult {
       return;
     }
 
-    const nameInput = inputs.find((input) => input !== phoneInput && isNameField(input)) ?? null;
+    const firstNameInput = inputs.find((input) => input !== phoneInput && isFirstNameField(input)) ?? null;
+    const lastNameInput = inputs.find((input) => input !== phoneInput && input !== firstNameInput && isLastNameField(input)) ?? null;
+    const nameInput = inputs.find((input) =>
+      input !== phoneInput
+      && input !== firstNameInput
+      && input !== lastNameInput
+      && isCombinedNameField(input)) ?? null;
+    const emailInput = inputs.find((input) => isEmailField(input)) ?? null;
+    const selectSelectors = collectFillableSelectSelectors(root);
     const checkboxes = findCheckboxes(root);
-    const hasEmail = inputs.some((input) => isEmailField(input));
+    const hasEmail = Boolean(emailInput);
     const hasTextarea = queryAllDeep(root, 'textarea').some((node) => node instanceof HTMLTextAreaElement && isVisible(node));
     const isAuthForm = looksLikeAuthForm(root);
     const phoneSelector = buildInputSelector(phoneInput);
     const nameSelector = nameInput ? buildInputSelector(nameInput) : null;
+    const firstNameSelector = firstNameInput ? buildInputSelector(firstNameInput) : null;
+    const lastNameSelector = lastNameInput ? buildInputSelector(lastNameInput) : null;
+    const emailSelector = emailInput ? buildInputSelector(emailInput) : null;
     const formScopeSelector = buildScopeSelector(root, phoneInput);
     const submitSelector = buildSubmitSelector(submitButton);
     const consentCheckboxSelectors = checkboxes
@@ -1050,7 +1337,7 @@ export function collectFormsInDocument(): FormDetectionResult {
 
     const score = scoreForm({
       phoneInput,
-      nameInput,
+      nameInput: nameInput ?? firstNameInput ?? lastNameInput,
       hasSubmit: true,
       checkboxCount: checkboxes.length,
       hasEmail,
@@ -1062,7 +1349,7 @@ export function collectFormsInDocument(): FormDetectionResult {
       return;
     }
 
-    const fingerprint = `${formScopeSelector}|${phoneSelector}|${submitSelector}`;
+    const fingerprint = `${formScopeSelector}|${phoneSelector}|${submitSelector}|${firstNameSelector ?? ''}|${lastNameSelector ?? ''}|${emailSelector ?? ''}`;
 
     if (seenFingerprints.has(fingerprint)) {
       return;
@@ -1072,6 +1359,10 @@ export function collectFormsInDocument(): FormDetectionResult {
     results.push({
       formScopeSelector,
       nameSelector,
+      firstNameSelector,
+      lastNameSelector,
+      emailSelector,
+      selectSelectors,
       phoneSelector,
       submitSelector,
       consentCheckboxSelectors,
