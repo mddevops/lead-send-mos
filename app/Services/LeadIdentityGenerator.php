@@ -137,7 +137,19 @@ class LeadIdentityGenerator
      */
     public function generatePhoneForRegion(?Region $region): array
     {
-        $grid = $region?->phone_grid ?? [];
+        $grid = [];
+        if ($region !== null) {
+            $prefix = $region->phonePrefixes()->inRandomOrder()->first(['from', 'to', 'operator']);
+            if ($prefix) {
+                $grid = [[
+                    'from' => $prefix->from,
+                    'to' => $prefix->to,
+                    'operator' => $prefix->operator,
+                ]];
+            } else {
+                $grid = $region->phone_grid ?? [];
+            }
+        }
 
         if ($grid === []) {
             throw new RuntimeException(

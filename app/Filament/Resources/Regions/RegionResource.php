@@ -5,6 +5,7 @@ namespace App\Filament\Resources\Regions;
 use App\Filament\Resources\Regions\Pages\CreateRegion;
 use App\Filament\Resources\Regions\Pages\EditRegion;
 use App\Filament\Resources\Regions\Pages\ListRegions;
+use App\Filament\Resources\Regions\RelationManagers\PhonePrefixesRelationManager;
 use App\Filament\Resources\Regions\Schemas\RegionForm;
 use App\Filament\Resources\Regions\Tables\RegionsTable;
 use App\Models\Region;
@@ -37,7 +38,9 @@ class RegionResource extends Resource
 
     public static function getRelations(): array
     {
-        return [];
+        return [
+            PhonePrefixesRelationManager::class,
+        ];
     }
 
     public static function getPages(): array

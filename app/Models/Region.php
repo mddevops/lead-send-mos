@@ -54,10 +54,14 @@ class Region extends Model
 
     public function formatPhoneGridPreview(int $limit = 2): string
     {
-        $rows = collect($this->phone_grid)
-            ->map(function (array $row): ?string {
-                $from = $row['from'] ?? '';
-                $to = $row['to'] ?? '';
+        $rows = $this->exists
+            ? $this->phonePrefixes()->limit($limit)->get(['from', 'to'])
+            : collect(self::normalizePhoneGrid($this->getAttributes()['phone_grid'] ?? null));
+
+        $preview = collect($rows)
+            ->map(function ($row): ?string {
+                $from = is_array($row) ? ($row['from'] ?? '') : $row->from;
+                $to = is_array($row) ? ($row['to'] ?? '') : $row->to;
 
                 if ($from === '' && $to === '') {
                     return null;
@@ -65,14 +69,48 @@ class Region extends Model
 
                 return trim($from.' → '.$to);
             })
-            ->filter()
-            ->take($limit);
+            ->filter();
 
-        return $rows->isEmpty() ? '—' : $rows->implode('; ');
+        return $preview->isEmpty() ? '—' : $preview->implode('; ');
+    }
+
+    public function phonePrefixes(): HasMany
+    {
+        return $this->hasMany(RegionPhonePrefix::class);
     }
 
     public function sites(): HasMany
     {
         return $this->hasMany(Site::class);
+    }
+
+    /**
+     * @return list<array{from: string, to: string, operator?: string|null}>
+     */
+    public function syncPhonePrefixesFromGrid(array $grid): void
+    {
+        $rows = self::normalizePhoneGrid($grid);
+        $this->phonePrefixes()->delete();
+
+        $payload = [];
+        foreach ($rows as $row) {
+            $from = trim((string) ($row['from'] ?? ''));
+            $to = trim((string) ($row['to'] ?? ''));
+            if ($from === '' || $to === '') {
+                continue;
+            }
+
+            $payload[] = [
+                'from' => $from,
+                'to' => $to,
+                'operator' => isset($row['operator']) && is_string($row['operator']) && $row['operator'] !== ''
+                    ? $row['operator']
+                    : null,
+            ];
+        }
+
+        if ($payload !== []) {
+            $this->phonePrefixes()->createMany($payload);
+        }
     }
 }

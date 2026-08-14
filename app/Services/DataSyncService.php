@@ -436,7 +436,6 @@ class DataSyncService
 
             $region = $this->resolveRegion(
                 is_string($pipelineData['region_name'] ?? null) ? (string) $pipelineData['region_name'] : null,
-                isset($pipelineData['region_id']) ? (int) $pipelineData['region_id'] : null,
             );
 
             if ($region === null) {
@@ -626,17 +625,24 @@ class DataSyncService
             throw new RuntimeException('invalid url');
         }
 
-        $region = $this->resolveRegion(
-            is_string($siteData['region_name'] ?? null) ? (string) $siteData['region_name'] : null,
-            isset($siteData['region_id']) ? (int) $siteData['region_id'] : null,
-        );
-        if ($region === null) {
-            throw new RuntimeException('region_name / region_id required and must exist');
+        $existing = YandexMapsSiteImporter::findByDomain($domain);
+
+        // Local and remote region IDs differ. Never trust payload region_id.
+        // Existing site: keep its region (e.g. Ростов on server, Волгоград locally).
+        // New site: match by name (ё/е, spaces) or create the region.
+        $region = null;
+        if ($existing === null) {
+            $region = $this->resolveRegion(
+                is_string($siteData['region_name'] ?? null) ? (string) $siteData['region_name'] : null,
+            );
+            if ($region === null) {
+                throw new RuntimeException(
+                    'region_name required to create a new site (region «'.trim((string) ($siteData['region_name'] ?? '')).'»)',
+                );
+            }
         }
 
-        return DB::transaction(function () use ($siteData, $normalizedUrl, $domain, $region, $replaceMappings): array {
-            $existing = YandexMapsSiteImporter::findByDomain($domain);
-            $created = false;
+        return DB::transaction(function () use ($siteData, $normalizedUrl, $domain, $region, $replaceMappings, $existing): array {
 
             $name = is_string($siteData['name'] ?? null) && trim((string) $siteData['name']) !== ''
                 ? trim((string) $siteData['name'])
@@ -644,7 +650,6 @@ class DataSyncService
 
             $attrs = [
                 'name' => $name,
-                'region_id' => $region->id,
                 'url' => $normalizedUrl,
                 'ad_url' => $siteData['ad_url'] ?? null,
                 'address' => $siteData['address'] ?? null,
@@ -659,7 +664,13 @@ class DataSyncService
                 'last_scan_at' => $this->parseDateTime($siteData['last_scan_at'] ?? null) ?? now(),
             ];
 
+            $created = false;
+
             if ($existing === null) {
+                if ($region === null) {
+                    throw new RuntimeException('region_name required to create a new site');
+                }
+                $attrs['region_id'] = $region->id;
                 $attrs['discovered_at'] = $this->parseDateTime($siteData['discovered_at'] ?? null) ?? now();
                 $site = Site::query()->create($attrs);
                 $created = true;
@@ -780,21 +791,36 @@ class DataSyncService
         ];
     }
 
-    private function resolveRegion(?string $regionName, ?int $regionId): ?Region
+    private function resolveRegion(?string $regionName): ?Region
     {
         $regionName = $regionName !== null ? trim($regionName) : '';
-        if ($regionName !== '') {
-            $byName = Region::query()->where('name', $regionName)->first();
-            if ($byName) {
-                return $byName;
-            }
+        if ($regionName === '') {
+            return null;
         }
 
-        if ($regionId && $regionId > 0) {
-            return Region::query()->find($regionId);
+        $normalized = $this->normalizeRegionName($regionName);
+
+        $match = Region::query()->get(['id', 'name'])->first(
+            fn (Region $region): bool => $this->normalizeRegionName($region->name) === $normalized,
+        );
+
+        if ($match) {
+            return $match;
         }
 
-        return null;
+        return Region::query()->create([
+            'name' => $regionName,
+            'notes' => 'Создан при синхронизации сайтов',
+        ]);
+    }
+
+    private function normalizeRegionName(string $name): string
+    {
+        $name = mb_strtolower(trim($name));
+        $name = str_replace(['ё', 'Ё'], 'е', $name);
+        $name = preg_replace('/[\s\-]+/u', '', $name) ?? $name;
+
+        return $name;
     }
 
     private function parseDateTime(mixed $value): ?Carbon

@@ -3,6 +3,7 @@
 namespace App\Console\Commands;
 
 use App\Models\Region;
+use App\Models\RegionPhonePrefix;
 use App\Support\PhonePrefixGridBuilder;
 use Illuminate\Console\Command;
 
@@ -47,10 +48,44 @@ class ImportRegionPhonePrefixes extends Command
                 ['name' => $regionName],
                 [
                     'operator' => null,
-                    'phone_grid' => $ranges,
+                    'phone_grid' => null,
                     'notes' => 'Импорт сотовых префиксов из prefixes.xlsx',
                 ],
             );
+
+            $region = Region::query()->where('name', $regionName)->first();
+            if ($region === null) {
+                continue;
+            }
+
+            $region->phonePrefixes()->delete();
+
+            $now = now();
+            foreach (array_chunk($ranges, 500) as $chunk) {
+                $payload = [];
+                foreach ($chunk as $row) {
+                    $from = trim((string) ($row['from'] ?? ''));
+                    $to = trim((string) ($row['to'] ?? ''));
+                    if ($from === '' || $to === '') {
+                        continue;
+                    }
+
+                    $payload[] = [
+                        'region_id' => $region->id,
+                        'from' => $from,
+                        'to' => $to,
+                        'operator' => isset($row['operator']) && is_string($row['operator']) && $row['operator'] !== ''
+                            ? $row['operator']
+                            : null,
+                        'created_at' => $now,
+                        'updated_at' => $now,
+                    ];
+                }
+
+                if ($payload !== []) {
+                    RegionPhonePrefix::query()->insert($payload);
+                }
+            }
         }
 
         if ($dryRun) {

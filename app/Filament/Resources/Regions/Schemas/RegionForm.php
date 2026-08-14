@@ -21,7 +21,7 @@ class RegionForm
                     ->placeholder('Например: МТС, Билайн'),
                 Repeater::make('phone_grid')
                     ->label('Сетка телефонов')
-                    ->helperText('Диапазоны DEF-префиксов. Можно импортировать из Excel: php artisan regions:import-prefixes')
+                    ->helperText('Несколько диапазонов для нового региона. Большие списки добавляйте на странице редактирования (по 20 строк) или импортом Excel.')
                     ->schema([
                         TextInput::make('from')
                             ->label('От')
@@ -38,9 +38,10 @@ class RegionForm
                     ->columns(3)
                     ->default([
                         ['from' => '+7918', 'to' => '+7921'],
-                        ['from' => '+7964', 'to' => '+7972'],
                     ])
+                    ->maxItems(50)
                     ->collapsible()
+                    ->hiddenOn('edit')
                     ->columnSpanFull(),
                 Textarea::make('notes')
                     ->label('Заметки')
