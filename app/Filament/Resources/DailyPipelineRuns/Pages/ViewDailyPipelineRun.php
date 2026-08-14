@@ -291,6 +291,7 @@ class ViewDailyPipelineRun extends ViewRecord implements HasTable
                             'campaign_id' => $campaign->id,
                             'site_id' => $record->id,
                             'proxy_id' => $proxy->id,
+                            'phone' => $identity['phone'],
                             'status' => 'pending',
                         ]);
 

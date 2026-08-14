@@ -1738,6 +1738,7 @@ class DailyPipelineService
                 'campaign_id' => $campaign->id,
                 'site_id' => $site->id,
                 'proxy_id' => $siteProxy->id,
+                'phone' => $identity['phone'],
                 'status' => 'pending',
             ]);
 

@@ -120,6 +120,7 @@ class BotWebhookControllerTest extends TestCase
             'campaign_id' => $campaign->id,
             'site_id' => $site->id,
             'proxy_id' => $proxy->id,
+            'phone' => '+79990000000',
             'status' => 'processing',
         ]);
 

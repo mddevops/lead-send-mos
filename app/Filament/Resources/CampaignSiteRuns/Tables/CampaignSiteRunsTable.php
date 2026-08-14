@@ -23,9 +23,25 @@ class CampaignSiteRunsTable
                 TextColumn::make('campaign.name')
                     ->label('Кампания')
                     ->searchable(),
-                TextColumn::make('campaign.phone')
+                TextColumn::make('phone')
                     ->label('Телефон')
-                    ->searchable(),
+                    ->getStateUsing(function ($record): string {
+                        $fromRun = trim((string) ($record->phone ?? ''));
+                        if ($fromRun !== '') {
+                            return $fromRun;
+                        }
+
+                        return trim((string) ($record->campaign?->phone ?? '')) ?: '—';
+                    })
+                    ->searchable(query: function (Builder $query, string $search): Builder {
+                        $like = '%'.$search.'%';
+
+                        return $query->where(function (Builder $inner) use ($like): void {
+                            $inner
+                                ->where('phone', 'like', $like)
+                                ->orWhereHas('campaign', fn (Builder $campaign) => $campaign->where('phone', 'like', $like));
+                        });
+                    }),
                 TextColumn::make('site.url')
                     ->label('Сайт')
                     ->searchable()
@@ -115,12 +131,21 @@ class CampaignSiteRunsTable
                     ->label('Телефон')
                     ->form([
                         TextInput::make('phone')
-                            ->label('Телефон кампании'),
+                            ->label('Телефон'),
                     ])
                     ->query(function (Builder $query, array $data): Builder {
                         $phone = trim((string) ($data['phone'] ?? ''));
 
-                        return $query->when($phone !== '', fn (Builder $q) => $q->whereHas('campaign', fn (Builder $campaign) => $campaign->where('phone', 'like', "%{$phone}%")));
+                        return $query->when($phone !== '', function (Builder $q) use ($phone): Builder {
+                            $like = '%'.$phone.'%';
+
+                            return $q->where(function (Builder $inner) use ($like): void {
+                                $inner
+                                    ->where('phone', 'like', $like)
+                                    ->orWhereHas('botTasks', fn (Builder $task) => $task->where('payload->phone', 'like', $like))
+                                    ->orWhereHas('campaign', fn (Builder $campaign) => $campaign->where('phone', 'like', $like));
+                            });
+                        });
                     }),
                 Filter::make('date_range')
                     ->label('Период')

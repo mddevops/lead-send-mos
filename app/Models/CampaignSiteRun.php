@@ -15,6 +15,7 @@ class CampaignSiteRun extends Model
         'campaign_id',
         'site_id',
         'proxy_id',
+        'phone',
         'status',
         'skip_reason',
         'error_message',

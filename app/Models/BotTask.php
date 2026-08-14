@@ -41,4 +41,21 @@ class BotTask extends Model
     {
         return $this->belongsTo(CampaignSiteRun::class);
     }
+
+    public function submittedPhone(): ?string
+    {
+        $fromPayload = trim((string) (($this->payload['phone'] ?? '')));
+        if ($fromPayload !== '') {
+            return $fromPayload;
+        }
+
+        $fromRun = trim((string) ($this->campaignSiteRun?->phone ?? ''));
+        if ($fromRun !== '') {
+            return $fromRun;
+        }
+
+        $fromCampaign = trim((string) ($this->campaignSiteRun?->campaign?->phone ?? ''));
+
+        return $fromCampaign !== '' ? $fromCampaign : null;
+    }
 }

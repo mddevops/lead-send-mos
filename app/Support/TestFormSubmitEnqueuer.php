@@ -72,6 +72,7 @@ class TestFormSubmitEnqueuer
             'campaign_id' => $campaign->id,
             'site_id' => $site->id,
             'proxy_id' => $proxy->id,
+            'phone' => $identity['phone'],
             'status' => 'pending',
         ]);
 

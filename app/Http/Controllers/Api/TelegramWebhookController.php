@@ -243,6 +243,7 @@ class TelegramWebhookController extends Controller
             $run = CampaignSiteRun::query()->create([
                 'campaign_id' => $campaign->id,
                 'site_id' => $site->id,
+                'phone' => $phone,
                 'status' => 'pending',
             ]);
 

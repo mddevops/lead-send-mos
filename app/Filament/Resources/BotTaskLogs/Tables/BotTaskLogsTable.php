@@ -32,9 +32,22 @@ class BotTaskLogsTable
                     ->searchable()
                     ->limit(40)
                     ->tooltip(fn (?string $state): ?string => $state),
-                TextColumn::make('campaignSiteRun.campaign.phone')
+                TextColumn::make('submitted_phone')
                     ->label('Телефон')
-                    ->searchable(),
+                    ->getStateUsing(fn ($record): string => $record->submittedPhone() ?? '—')
+                    ->searchable(query: function (Builder $query, string $search): Builder {
+                        $like = '%'.$search.'%';
+
+                        return $query->where(function (Builder $inner) use ($like): void {
+                            $inner
+                                ->where('payload->phone', 'like', $like)
+                                ->orWhereHas('campaignSiteRun', fn (Builder $run) => $run->where('phone', 'like', $like))
+                                ->orWhereHas(
+                                    'campaignSiteRun.campaign',
+                                    fn (Builder $campaign) => $campaign->where('phone', 'like', $like)
+                                );
+                        });
+                    }),
                 TextColumn::make('campaignSiteRun.campaign.source')
                     ->label('Источник')
                     ->badge()

@@ -25,6 +25,8 @@ class CampaignSiteRunForm
                 Select::make('proxy_id')
                     ->label('Прокси')
                     ->relationship('proxy', 'name'),
+                TextInput::make('phone')
+                    ->label('Телефон (введённый)'),
                 Select::make('status')
                     ->label('Статус')
                     ->options([

@@ -49,6 +49,7 @@ class BotTaskLogResource extends Resource
     {
         return parent::getEloquentQuery()
             ->where('type', 'submit_lead')
+            ->with(['site', 'campaignSiteRun.campaign', 'campaignSiteRun.proxy'])
             ->latest('id');
     }
 }
