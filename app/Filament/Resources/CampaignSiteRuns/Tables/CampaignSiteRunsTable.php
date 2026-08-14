@@ -26,9 +26,11 @@ class CampaignSiteRunsTable
                 TextColumn::make('campaign.phone')
                     ->label('Телефон')
                     ->searchable(),
-                TextColumn::make('site.name')
+                TextColumn::make('site.url')
                     ->label('Сайт')
-                    ->searchable(),
+                    ->searchable()
+                    ->limit(40)
+                    ->tooltip(fn (?string $state): ?string => $state),
                 TextColumn::make('proxy.name')
                     ->label('Прокси')
                     ->searchable(),

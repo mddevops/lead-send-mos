@@ -164,7 +164,7 @@ class ProjectSettings extends Page implements HasForms
                     ]),
 
                 Section::make('Автопайплайн (крон)')
-                    ->description('Крон `pipeline:tick` каждую минуту. Если включено — в окне старт→дедлайн создаётся прогон: поиск Promo → скан форм → отправка (всегда с proxy).')
+                    ->description('Крон `schedule:run` каждую минуту: `pipeline:tick` (сброс зависших задач >5 мин, продолжение кругов) и `proxy:health-check` каждые 10 мин (включает рабочие прокси и снимает паузу пайплайна).')
                     ->columns(3)
                     ->schema([
                         Toggle::make('pipeline_enabled')->label('Включить автопайплайн'),

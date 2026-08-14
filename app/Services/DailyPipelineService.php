@@ -6,6 +6,7 @@ use App\Models\BotTask;
 use App\Models\Campaign;
 use App\Models\CampaignSiteRun;
 use App\Models\DailyPipelineRun;
+use App\Models\DiscoveryRun;
 use App\Models\ProjectSetting;
 use App\Models\Proxy;
 use App\Models\Region;
@@ -15,12 +16,15 @@ use App\Support\RuntimeSettings;
 use App\Support\SubmitLeadPayloadBuilder;
 use Carbon\Carbon;
 use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 use Throwable;
 
 class DailyPipelineService
 {
+    public const STALE_PROCESSING_MINUTES = 5;
+
     public function __construct(
         private readonly YandexAdsDiscoveryService $discovery,
         private readonly LeadIdentityGenerator $identityGenerator,
@@ -29,6 +33,13 @@ class DailyPipelineService
 
     public function tick(): void
     {
+        $this->failStaleProcessingTasks();
+        $this->maybeRunProxyHealthCheck();
+
+        if ($this->pickProxy() !== null) {
+            $this->resumePausedForProxy();
+        }
+
         $settings = ProjectSetting::query()->firstOrCreate([]);
 
         // Activate scheduled pending runs whose start time has arrived.
@@ -1940,6 +1951,138 @@ class DailyPipelineService
         }
 
         return $sent;
+    }
+
+    /**
+     * Fail bot tasks stuck in processing longer than STALE_PROCESSING_MINUTES
+     * so a hung browser cannot freeze the whole pipeline.
+     */
+    public function failStaleProcessingTasks(): int
+    {
+        $cutoff = now()->subMinutes(self::STALE_PROCESSING_MINUTES);
+
+        $tasks = BotTask::query()
+            ->where('status', 'processing')
+            ->where(function ($query) use ($cutoff): void {
+                $query->where('started_at', '<', $cutoff)
+                    ->orWhere(function ($inner) use ($cutoff): void {
+                        $inner->whereNull('started_at')->where('updated_at', '<', $cutoff);
+                    });
+            })
+            ->orderBy('id')
+            ->get();
+
+        foreach ($tasks as $task) {
+            $this->failStaleTask($task);
+        }
+
+        $orphanRuns = CampaignSiteRun::query()
+            ->whereIn('status', ['pending', 'processing'])
+            ->whereDoesntHave('botTasks', fn ($q) => $q->whereIn('status', ['queued', 'processing']))
+            ->where('updated_at', '<', $cutoff)
+            ->get();
+
+        foreach ($orphanRuns as $run) {
+            $run->update([
+                'status' => 'failed',
+                'error_message' => $run->error_message ?: 'Задача зависла и была сброшена',
+                'finished_at' => now(),
+            ]);
+            if ($run->campaign) {
+                $this->refreshCampaignAfterRun($run->campaign);
+            }
+        }
+
+        $n = $tasks->count() + $orphanRuns->count();
+        if ($n > 0) {
+            Log::warning('pipeline.stale_processing_failed', [
+                'tasks' => $tasks->count(),
+                'orphan_runs' => $orphanRuns->count(),
+                'minutes' => self::STALE_PROCESSING_MINUTES,
+            ]);
+        }
+
+        return $n;
+    }
+
+    private function failStaleTask(BotTask $task): void
+    {
+        $message = 'Задача зависла в processing более '.self::STALE_PROCESSING_MINUTES.' мин — сброшена';
+        $started = $task->started_at;
+        $duration = $started ? (int) max(0, $started->diffInMilliseconds(now())) : null;
+
+        $task->update([
+            'status' => 'failed',
+            'error_message' => $message,
+            'finished_at' => now(),
+            'duration_ms' => $duration,
+        ]);
+
+        $run = $task->campaignSiteRun;
+        if ($run && in_array($run->status, ['pending', 'processing'], true)) {
+            $run->update([
+                'status' => 'failed',
+                'error_message' => $message,
+                'finished_at' => now(),
+                'duration_ms' => $duration,
+            ]);
+            if ($run->campaign) {
+                $this->refreshCampaignAfterRun($run->campaign);
+            }
+        }
+
+        if ($task->type === 'discover_yandex_ads') {
+            $runId = (int) ($task->payload['discoveryRunId'] ?? 0);
+            $discovery = $runId > 0 ? DiscoveryRun::query()->find($runId) : null;
+            $discovery ??= DiscoveryRun::query()->where('bot_task_id', $task->id)->first();
+            if ($discovery && ! in_array($discovery->status, ['completed', 'failed'], true)) {
+                $this->discovery->markFailed($discovery, $message);
+            }
+        }
+
+        Log::warning('pipeline.stale_task_failed', [
+            'task_id' => $task->id,
+            'type' => $task->type,
+            'site_id' => $task->site_id,
+            'started_at' => $task->started_at,
+        ]);
+    }
+
+    private function refreshCampaignAfterRun(Campaign $campaign): void
+    {
+        $campaign->update([
+            'success_count' => $campaign->runs()->where('status', 'success')->count(),
+            'failed_count' => $campaign->runs()->where('status', 'failed')->count(),
+            'skipped_count' => $campaign->runs()->where('status', 'skipped')->count(),
+            'unknown_count' => $campaign->runs()->where('status', 'unknown')->count(),
+        ]);
+
+        $pendingCount = $campaign->runs()->whereIn('status', ['pending', 'processing'])->count();
+
+        if ($pendingCount === 0) {
+            $campaign->update([
+                'status' => $campaign->failed_count > 0 ? 'completed_with_errors' : 'completed',
+                'finished_at' => now(),
+            ]);
+        }
+    }
+
+    /**
+     * Laravel schedule:run should fire proxy:health-check every 10 minutes.
+     * Also run it from tick so disabled proxies get revived even if the named
+     * schedule entry is missing from crontab.
+     */
+    private function maybeRunProxyHealthCheck(): void
+    {
+        if (! Cache::add('cron.proxy_health_check', 1, now()->addMinutes(10))) {
+            return;
+        }
+
+        try {
+            Artisan::call('proxy:health-check');
+        } catch (Throwable $e) {
+            Log::warning('pipeline.proxy_health_from_tick_failed', ['error' => $e->getMessage()]);
+        }
     }
 
     private function pickProxy(): ?Proxy

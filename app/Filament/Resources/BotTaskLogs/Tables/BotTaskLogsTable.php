@@ -27,9 +27,11 @@ class BotTaskLogsTable
                         'failed' => 'Ошибка',
                         default => $state ?? '—',
                     }),
-                TextColumn::make('site.name')
+                TextColumn::make('site.url')
                     ->label('Сайт')
-                    ->searchable(),
+                    ->searchable()
+                    ->limit(40)
+                    ->tooltip(fn (?string $state): ?string => $state),
                 TextColumn::make('campaignSiteRun.campaign.phone')
                     ->label('Телефон')
                     ->searchable(),

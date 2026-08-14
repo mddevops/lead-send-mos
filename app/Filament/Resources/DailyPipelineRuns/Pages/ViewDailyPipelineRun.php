@@ -15,6 +15,7 @@ use App\Services\DailyPipelineService;
 use App\Services\LeadIdentityGenerator;
 use App\Support\PipelineSitesExcelExport;
 use App\Support\ProxyPicker;
+use App\Support\ScanFormLauncher;
 use App\Support\SubmitLeadPayloadBuilder;
 use Filament\Actions\Action;
 use Filament\Actions\DeleteAction;
@@ -75,17 +76,13 @@ class ViewDailyPipelineRun extends ViewRecord implements HasTable
             ->description('Статистика форм и отправок обновляется при открытии и каждые 15 сек.')
             ->columns([
                 TextColumn::make('id')->label('ID')->sortable(),
-                TextColumn::make('name')
-                    ->label('Название')
-                    ->searchable()
-                    ->limit(28)
-                    ->url(fn (Site $record): string => SiteResource::getUrl('edit', ['record' => $record]))
-                    ->color('primary'),
                 TextColumn::make('url')
                     ->label('URL')
                     ->searchable()
-                    ->limit(36)
+                    ->limit(48)
                     ->tooltip(fn (Site $record): string => $record->url)
+                    ->url(fn (Site $record): string => SiteResource::getUrl('edit', ['record' => $record]))
+                    ->color('primary')
                     ->copyable(),
                 TextColumn::make('status')
                     ->label('Статус')
@@ -151,7 +148,7 @@ class ViewDailyPipelineRun extends ViewRecord implements HasTable
                         foreach ($sites as $site) {
                             $stats = $submitStats[$site->id] ?? null;
                             $rows[] = [
-                                'name' => (string) ($site->name ?: $site->url),
+                                'name' => (string) $site->url,
                                 'total' => (int) ($stats['total'] ?? 0),
                                 'failed' => (int) ($stats['failed'] ?? 0),
                             ];
@@ -168,6 +165,46 @@ class ViewDailyPipelineRun extends ViewRecord implements HasTable
                     }),
             ])
             ->actions([
+                \Filament\Actions\Action::make('scan_form')
+                    ->label('Найти форму')
+                    ->icon('heroicon-o-magnifying-glass')
+                    ->color('primary')
+                    ->requiresConfirmation()
+                    ->modalHeading('Найти форму автоматически')
+                    ->modalDescription('Бот просканирует сайт. Если у соседнего поддомена уже есть успешный маппинг — он будет скопирован.')
+                    ->modalSubmitActionLabel('Найти')
+                    ->visible(fn (Site $record): bool => ! in_array($record->status, ['disabled', 'scanning'], true)
+                        && $record->formMappings->isEmpty())
+                    ->action(function (Site $record): void {
+                        $result = ScanFormLauncher::reuseOrEnqueue($record);
+
+                        if ($result['mode'] === 'reused') {
+                            $info = $result['result'];
+                            Notification::make()
+                                ->title('Маппинг взят с поддомена')
+                                ->body("Донор #{$info['donor_id']} ({$info['donor_name']}), домен {$info['parent_domain']}, форм: {$info['mappings_count']}.")
+                                ->success()
+                                ->send();
+
+                            return;
+                        }
+
+                        if ($result['mode'] === 'error') {
+                            Notification::make()
+                                ->title($result['title'])
+                                ->body($result['body'])
+                                ->danger()
+                                ->send();
+
+                            return;
+                        }
+
+                        Notification::make()
+                            ->title("Задача поиска формы #{$result['task_id']} в очереди")
+                            ->body('Обновите страницу через минуту — после скана появится форма.')
+                            ->success()
+                            ->send();
+                    }),
                 \Filament\Actions\Action::make('manual_mapping')
                     ->label('Маппинг')
                     ->icon('heroicon-o-wrench-screwdriver')

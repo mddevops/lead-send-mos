@@ -31,21 +31,18 @@ class SitesRelationManager extends RelationManager
     {
         return $table
             ->columns([
-                TextColumn::make('name')
-                    ->label('Название')
-                    ->searchable()
-                    ->url(fn (Site $record): string => SiteResource::getUrl('edit', ['record' => $record]))
-                    ->color('primary'),
-                TextColumn::make('region.name')
-                    ->label('Регион')
-                    ->searchable(),
                 TextColumn::make('url')
                     ->label('URL')
                     ->searchable()
-                    ->limit(40)
+                    ->limit(50)
                     ->tooltip(fn (Site $record): string => $record->url)
+                    ->url(fn (Site $record): string => SiteResource::getUrl('edit', ['record' => $record]))
+                    ->color('primary')
                     ->copyable()
                     ->copyMessage('URL скопирован'),
+                TextColumn::make('region.name')
+                    ->label('Регион')
+                    ->searchable(),
                 TextColumn::make('ad_url')
                     ->label('Рекламная ссылка')
                     ->limit(50)

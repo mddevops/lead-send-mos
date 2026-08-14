@@ -15,9 +15,9 @@ class PipelineTickCommand extends Command
     public function handle(DailyPipelineService $pipeline): int
     {
         $actives = DailyPipelineRun::query()
-            ->whereIn('status', ['pending', 'discovering', 'scanning', 'submitting'])
+            ->whereIn('status', ['pending', 'discovering', 'scanning', 'submitting', 'paused_no_proxy'])
             ->orderBy('id')
-            ->get(['id', 'status', 'submit_cycle_current', 'campaign_id']);
+            ->get(['id', 'status', 'submit_cycle_current', 'campaign_id', 'pause_reason']);
 
         if ($actives->isEmpty()) {
             $this->info('Pipeline tick: no active runs');

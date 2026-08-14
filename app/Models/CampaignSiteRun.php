@@ -4,6 +4,7 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Model;
 
 class CampaignSiteRun extends Model
@@ -52,5 +53,10 @@ class CampaignSiteRun extends Model
     public function proxy(): BelongsTo
     {
         return $this->belongsTo(Proxy::class);
+    }
+
+    public function botTasks(): HasMany
+    {
+        return $this->hasMany(BotTask::class);
     }
 }

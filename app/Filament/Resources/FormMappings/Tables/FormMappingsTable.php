@@ -15,9 +15,11 @@ class FormMappingsTable
     {
         return $table
             ->columns([
-                TextColumn::make('site.name')
+                TextColumn::make('site.url')
                     ->label('Сайт')
-                    ->searchable(),
+                    ->searchable()
+                    ->limit(40)
+                    ->tooltip(fn (?string $state): ?string => $state),
                 TextColumn::make('source_url')
                     ->label('Страница')
                     ->searchable()

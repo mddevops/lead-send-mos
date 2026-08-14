@@ -31,14 +31,14 @@ class SitesTable
     {
         return $table
             ->columns([
-                TextColumn::make('name')
-                    ->label('Название')
-                    ->searchable(),
-                TextColumn::make('region.name')
-                    ->label('Регион')
-                    ->searchable(),
                 TextColumn::make('url')
                     ->label('URL')
+                    ->searchable()
+                    ->limit(50)
+                    ->tooltip(fn (?string $state): ?string => $state)
+                    ->wrap(),
+                TextColumn::make('region.name')
+                    ->label('Регион')
                     ->searchable(),
                 TextColumn::make('ad_url')
                     ->label('Рекламная ссылка')
