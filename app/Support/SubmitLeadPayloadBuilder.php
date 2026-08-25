@@ -28,7 +28,7 @@ class SubmitLeadPayloadBuilder
     {
         return $site->formMappings()
             ->where('status', 'active')
-            ->orderByDesc('id')
+            ->inRandomOrder()
             ->first();
     }
 
