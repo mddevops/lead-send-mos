@@ -7,6 +7,7 @@ use App\Models\FormMapping;
 use App\Models\Proxy;
 use App\Models\ProjectSetting;
 use App\Models\Region;
+use App\Models\RegionPhonePrefix;
 use App\Models\Site;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\DB;
@@ -196,6 +197,84 @@ class DataSyncService
         }
 
         return compact('created', 'updated', 'errors');
+    }
+
+    /**
+     * @param  list<int>|null  $regionIds
+     * @return array<string, mixed>
+     */
+    public function exportRegions(?array $regionIds = null): array
+    {
+        $query = Region::query()
+            ->with(['phonePrefixes' => fn ($q) => $q->orderBy('id')])
+            ->orderBy('id');
+
+        if ($regionIds !== null && $regionIds !== []) {
+            $query->whereIn('id', array_map('intval', $regionIds));
+        }
+
+        $regions = $query->get()->map(fn (Region $region): array => $this->serializeRegion($region))->values()->all();
+
+        return [
+            'version' => self::VERSION,
+            'type' => 'regions',
+            'exported_at' => now()->toIso8601String(),
+            'regions' => $regions,
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $payload
+     * @return array{created: int, updated: int, synced_prefixes: int, errors: list<array{name?: string, message: string}>}
+     */
+    public function importRegions(array $payload, bool $replacePrefixes = true): array
+    {
+        $regions = $payload['regions'] ?? null;
+        if (! is_array($regions)) {
+            throw new RuntimeException('payload.regions must be an array');
+        }
+
+        $created = 0;
+        $updated = 0;
+        $syncedPrefixes = 0;
+        $errors = [];
+
+        foreach ($regions as $index => $row) {
+            if (! is_array($row)) {
+                $errors[] = ['message' => "regions[{$index}] must be an object"];
+
+                continue;
+            }
+
+            $name = trim((string) ($row['name'] ?? ''));
+            if ($name === '') {
+                $errors[] = ['message' => "regions[{$index}]: name is required"];
+
+                continue;
+            }
+
+            try {
+                $result = $this->upsertRegionWithPrefixes($row, $replacePrefixes);
+                if ($result['created']) {
+                    $created++;
+                } else {
+                    $updated++;
+                }
+                $syncedPrefixes += $result['prefixes'];
+            } catch (Throwable $e) {
+                $errors[] = [
+                    'name' => $name,
+                    'message' => $e->getMessage(),
+                ];
+            }
+        }
+
+        return [
+            'created' => $created,
+            'updated' => $updated,
+            'synced_prefixes' => $syncedPrefixes,
+            'errors' => $errors,
+        ];
     }
 
     /**
@@ -791,6 +870,121 @@ class DataSyncService
         ];
     }
 
+    /**
+     * @return array<string, mixed>
+     */
+    private function serializeRegion(Region $region): array
+    {
+        return [
+            'name' => $region->name,
+            'operator' => $region->operator,
+            'notes' => $region->notes,
+            'phone_prefixes' => $region->phonePrefixes
+                ->map(static fn (RegionPhonePrefix $prefix): array => [
+                    'from' => $prefix->from,
+                    'to' => $prefix->to,
+                    'operator' => $prefix->operator,
+                ])
+                ->values()
+                ->all(),
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $regionData
+     * @return array{created: bool, prefixes: int, region: Region}
+     */
+    private function upsertRegionWithPrefixes(array $regionData, bool $replacePrefixes): array
+    {
+        $name = trim((string) ($regionData['name'] ?? ''));
+        if ($name === '') {
+            throw new RuntimeException('region name is required');
+        }
+
+        return DB::transaction(function () use ($regionData, $name, $replacePrefixes): array {
+            $existing = $this->findRegionByName($name);
+            $created = false;
+
+            $attrs = [
+                'name' => $existing?->name ?: $name,
+                'operator' => array_key_exists('operator', $regionData)
+                    ? ($regionData['operator'] !== null && $regionData['operator'] !== ''
+                        ? (string) $regionData['operator']
+                        : null)
+                    : $existing?->operator,
+                'notes' => array_key_exists('notes', $regionData)
+                    ? ($regionData['notes'] !== null && $regionData['notes'] !== ''
+                        ? (string) $regionData['notes']
+                        : null)
+                    : $existing?->notes,
+            ];
+
+            if ($existing === null) {
+                $region = Region::query()->create([
+                    ...$attrs,
+                    'phone_grid' => null,
+                ]);
+                $created = true;
+            } else {
+                $existing->fill($attrs)->save();
+                $region = $existing->fresh() ?? $existing;
+            }
+
+            $prefixes = is_array($regionData['phone_prefixes'] ?? null)
+                ? $regionData['phone_prefixes']
+                : [];
+
+            $prefixCount = 0;
+
+            if ($replacePrefixes || $prefixes !== []) {
+                if ($replacePrefixes) {
+                    $region->phonePrefixes()->delete();
+                }
+
+                $now = now();
+                $payload = [];
+                foreach ($prefixes as $row) {
+                    if (! is_array($row)) {
+                        continue;
+                    }
+
+                    $from = trim((string) ($row['from'] ?? ''));
+                    $to = trim((string) ($row['to'] ?? ''));
+                    if ($from === '' || $to === '') {
+                        continue;
+                    }
+
+                    $payload[] = [
+                        'region_id' => $region->id,
+                        'from' => $from,
+                        'to' => $to,
+                        'operator' => isset($row['operator']) && is_string($row['operator']) && $row['operator'] !== ''
+                            ? $row['operator']
+                            : null,
+                        'created_at' => $now,
+                        'updated_at' => $now,
+                    ];
+                }
+
+                foreach (array_chunk($payload, 500) as $chunk) {
+                    RegionPhonePrefix::query()->insert($chunk);
+                    $prefixCount += count($chunk);
+                }
+            }
+
+            return ['created' => $created, 'prefixes' => $prefixCount, 'region' => $region];
+        });
+    }
+
+    private function findRegionByName(string $regionName): ?Region
+    {
+        $normalized = $this->normalizeRegionName($regionName);
+
+        return Region::query()->get(['id', 'name', 'operator', 'notes'])->first(
+            fn (Region $region): bool => $this->normalizeRegionName($region->name) === $normalized,
+        );
+    }
+
     private function resolveRegion(?string $regionName): ?Region
     {
         $regionName = $regionName !== null ? trim($regionName) : '';
@@ -798,12 +992,7 @@ class DataSyncService
             return null;
         }
 
-        $normalized = $this->normalizeRegionName($regionName);
-
-        $match = Region::query()->get(['id', 'name'])->first(
-            fn (Region $region): bool => $this->normalizeRegionName($region->name) === $normalized,
-        );
-
+        $match = $this->findRegionByName($regionName);
         if ($match) {
             return $match;
         }

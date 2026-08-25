@@ -2,6 +2,7 @@
 
 namespace App\Filament\Resources\Regions\Tables;
 
+use App\Support\DataSyncFilamentActions;
 use Filament\Actions\BulkActionGroup;
 use Filament\Actions\DeleteBulkAction;
 use Filament\Actions\EditAction;
@@ -47,6 +48,7 @@ class RegionsTable
             ])
             ->toolbarActions([
                 BulkActionGroup::make([
+                    DataSyncFilamentActions::pushSelectedRegionsBulkAction(),
                     DeleteBulkAction::make(),
                 ]),
             ]);

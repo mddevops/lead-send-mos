@@ -90,6 +90,42 @@ final class DataSyncFilamentActions
             });
     }
 
+    public static function pushSelectedRegionsBulkAction(): BulkAction
+    {
+        return BulkAction::make('sync_push_regions')
+            ->label('Отправить на сервер')
+            ->icon('heroicon-o-cloud-arrow-up')
+            ->color('primary')
+            ->modalHeading('Отправить выбранные регионы на удалённый сервер?')
+            ->modalDescription('Уйдут регионы вместе с сеткой телефонов (диапазоны). Сопоставление на сервере — по названию региона.')
+            ->modalSubmitActionLabel('Отправить')
+            ->deselectRecordsAfterCompletion()
+            ->form(self::remoteUrlFormSchema())
+            ->action(function (Collection $records, array $data): void {
+                try {
+                    $ids = $records->modelKeys();
+                    $sync = app(DataSyncService::class);
+                    $payload = $sync->exportRegions($ids);
+                    $payload['replace_prefixes'] = true;
+
+                    if (($payload['regions'] ?? []) === []) {
+                        Notification::make()->title('Нечего отправлять')->warning()->send();
+
+                        return;
+                    }
+
+                    $result = $sync->pushToRemoteUrl((string) ($data['remote_url'] ?? ''), 'regions', $payload);
+                    Notification::make()
+                        ->title('Регионы отправлены ('.count($payload['regions']).')')
+                        ->body(self::resultSummary($result))
+                        ->success()
+                        ->send();
+                } catch (Throwable $e) {
+                    Notification::make()->title('Не удалось отправить')->body($e->getMessage())->danger()->send();
+                }
+            });
+    }
+
     public static function pushSelectedPipelinesBulkAction(): BulkAction
     {
         return BulkAction::make('sync_push_pipelines')
@@ -175,7 +211,7 @@ final class DataSyncFilamentActions
     private static function resultSummary(array $result): string
     {
         $parts = [];
-        foreach (['created_sites', 'updated_sites', 'created_mappings', 'created', 'updated', 'created_pipelines'] as $key) {
+        foreach (['created_sites', 'updated_sites', 'created_mappings', 'created', 'updated', 'synced_prefixes', 'created_pipelines'] as $key) {
             if (isset($result[$key])) {
                 $parts[] = "{$key}={$result[$key]}";
             }

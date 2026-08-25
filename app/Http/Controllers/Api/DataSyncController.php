@@ -66,6 +66,39 @@ class DataSyncController extends Controller
         return response()->json(['ok' => $ok, ...$result], $ok ? 200 : 422);
     }
 
+    public function exportRegions(Request $request): JsonResponse
+    {
+        $ids = $request->query('ids');
+        $regionIds = null;
+        if (is_string($ids) && trim($ids) !== '') {
+            $regionIds = array_values(array_filter(array_map('intval', explode(',', $ids))));
+        } elseif (is_array($ids)) {
+            $regionIds = array_values(array_filter(array_map('intval', $ids)));
+        }
+
+        return response()->json($this->sync->exportRegions($regionIds));
+    }
+
+    public function importRegions(Request $request): JsonResponse
+    {
+        $data = $request->validate([
+            'version' => ['nullable', 'integer'],
+            'type' => ['nullable', 'string'],
+            'regions' => ['required', 'array', 'min:1'],
+            'replace_prefixes' => ['nullable', 'boolean'],
+        ]);
+
+        $result = $this->sync->importRegions(
+            $data,
+            (bool) ($data['replace_prefixes'] ?? true),
+        );
+
+        $ok = $result['errors'] === []
+            || ($result['created'] + $result['updated']) > 0;
+
+        return response()->json(['ok' => $ok, ...$result], $ok ? 200 : 422);
+    }
+
     public function exportPipelines(Request $request): JsonResponse
     {
         $ids = $request->query('ids');

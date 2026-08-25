@@ -29,6 +29,8 @@ Route::prefix('bot')
         Route::post('/sync/sites', [DataSyncController::class, 'importSites']);
         Route::get('/sync/proxies', [DataSyncController::class, 'exportProxies']);
         Route::post('/sync/proxies', [DataSyncController::class, 'importProxies']);
+        Route::get('/sync/regions', [DataSyncController::class, 'exportRegions']);
+        Route::post('/sync/regions', [DataSyncController::class, 'importRegions']);
         Route::get('/sync/daily-pipeline-runs', [DataSyncController::class, 'exportPipelines']);
         Route::get('/sync/daily-pipeline-runs/{pipeline}', [DataSyncController::class, 'exportPipeline']);
         Route::post('/sync/daily-pipeline-runs', [DataSyncController::class, 'importPipelines']);
