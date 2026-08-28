@@ -1583,8 +1583,8 @@ class DailyPipelineService
 
         $sites = Site::query()
             ->whereIn('id', $siteIds)
-            ->whereDoesntHave('formMappings')
             ->whereIn('status', ['new', 'needs_manual_mapping', 'mapping_failed'])
+            ->whereDoesntHave('formMappings', fn ($q) => $q->where('status', 'active'))
             ->get();
 
         $queued = 0;

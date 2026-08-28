@@ -28,6 +28,12 @@ import {
 } from '../utils/formInteractions';
 import { observeDomMutations } from '../utils/domMutationWait';
 import { SUCCESS_TEXT_PATTERN } from '../utils/formDetectionConstants';
+import {
+  buildSubmitResponseText,
+  createSubmitResponseCollector,
+  extractVisibleSubmitFeedback,
+  pickSubmitResponseUrl,
+} from '../utils/submitResponseCapture';
 import { pickBrowserFingerprint, RegionPayload } from '../utils/browserProfiles';
 import { pickFillBehavior } from '../utils/fillBehaviors';
 import { attachFormCaptchaWatcher, resolveCaptcha } from '../utils/captchaHandler';
@@ -151,47 +157,9 @@ export async function submitLead(payload: SubmitLeadPayload): Promise<void> {
   );
 
   try {
-    let responseUrl: string | null = null;
-    let responseStatus: number | null = null;
-    let responseText: string | null = null;
-    const networkOkStatuses: number[] = [];
-
-    page.on('response', async (response) => {
-      const request = response.request();
-      const method = request.method().toUpperCase();
-      const status = response.status();
-      const responseHref = response.url();
-
-      // Captcha / analytics POSTs often return 200 and must not feed successScore.network_ok.
-      const isNoiseNetwork = /mc\.yandex|metrika|google-analytics|googletagmanager|facebook\.com\/tr|vk\.com\/rtrg|smartcaptcha|captcha\.yandex|yandexcloud\.net\/check|showcaptcha|checkcaptcha|api-maps\.yandex|log\.api-maps|doubleclick|yandex\.ru\/clck|tildaapi\.com\/event|stat\.tilda|forms\.tildaapi\.com\/procces\/captcha/i.test(
-        responseHref,
-      );
-
-      if ((method === 'POST' || method === 'PUT' || method === 'PATCH')
-        && (status === 200 || status === 201 || status === 204)
-        && !isNoiseNetwork) {
-        networkOkStatuses.push(status);
-      }
-
-      if (!request.url().includes(payload.url) && !responseHref.includes(new URL(payload.url).hostname)) {
-        return;
-      }
-
-      // Ignore analytics/beacon responses (Yandex Metrika etc.) — they blow DB columns and aren't the form POST.
-      if (/mc\.yandex|google-analytics|googletagmanager|facebook\.com\/tr|vk\.com\/rtrg|api-maps\.yandex|log\.api-maps/i.test(responseHref)) {
-        return;
-      }
-
-      responseUrl = responseHref;
-      responseStatus = status;
-
-      try {
-        const text = await response.text();
-        responseText = text.slice(0, 4000);
-      } catch {
-        responseText = null;
-      }
-    });
+    const siteHostname = new URL(payload.url).hostname;
+    const responseCollector = createSubmitResponseCollector(siteHostname);
+    page.on('response', (response) => responseCollector.onResponse(response));
 
     const submitUrl = normalizePageUrl(payload.url);
     logger.info({ url: payload.url, submitUrl }, 'Opening form page for submit');
@@ -742,6 +710,21 @@ export async function submitLead(payload: SubmitLeadPayload): Promise<void> {
       const finalHtml = await safePageContent(page);
       const finalContentHash = hashFromContentOrUrl(finalHtml, finalUrl);
 
+      const visibleFeedback = await extractVisibleSubmitFeedback(
+        page,
+        payload.mapping.form_scope_selector,
+      );
+      const bestNetwork = responseCollector.getBestNetworkResponse();
+      const networkOkStatuses = responseCollector.getNetworkOkStatuses();
+      const responseStatus = bestNetwork?.status ?? null;
+      const responseUrl = pickSubmitResponseUrl(bestNetwork, finalUrl);
+      const responseText = buildSubmitResponseText({
+        visibleSuccess: visibleFeedback.success,
+        visibleError: visibleFeedback.error,
+        network: bestNetwork,
+        pageSnippet: visibleFeedback.success || visibleFeedback.error ? null : (finalHtml ?? '').replace(/\s+/g, ' ').trim(),
+      });
+
       const result = await detectSubmitResult({
         page,
         initialUrl,
@@ -795,7 +778,7 @@ export async function submitLead(payload: SubmitLeadPayload): Promise<void> {
         status: result.status,
         detected_success_reason: result.detected_success_reason,
         detected_error_reason: result.detected_error_reason,
-        response_url: responseUrl ?? page.url(),
+        response_url: responseUrl,
         response_text: responseText,
         http_status: responseStatus,
         screenshot_before: screenshotBefore,
